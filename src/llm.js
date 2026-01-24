@@ -144,8 +144,6 @@ SCROLLING (input_scroll):
 - Minimum |ticks| = 50, normal scroll = 300-500
 - NEVER use small values like -3 or 5!
 
-IMPORTANT: If using with type_text, then always "enable_adb_keyboard" to ensure the virtual keyboard is hidden and will not interfere!
-
 CAPTCHA VERIFICATION:
 1. Get_screenshot → look for a solution
 2. Use input_tap or input_swipe to solve

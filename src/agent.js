@@ -48,11 +48,13 @@ class Agent {
 
     // TTS options
     const speak = options.speak !== false; // enabled by default
+    // Keyboard options
+    const hideVirtualKeyboard = options.hide_virtual_keyboard !== false; // disabled by default
 
     console.log(`\n${'═'.repeat(60)}`);
     this.log(`🤖 AGENT: "${task}"`);
     this.log(`   Device: ${this.sn} | Max: ${maxSteps} steps, ${maxDurationMs/1000}s`);
-    this.log(`   TTS: ${speak ? 'ON' : 'OFF'}`);
+    this.log(`   TTS: ${speak ? 'ON' : 'OFF'} | Hide keyboard: ${hideVirtualKeyboard ? 'ON' : 'OFF'}`);
     console.log(`${'═'.repeat(60)}`);
 
     await this.report({ uuid: this.sn, task_id: taskId, type: 'start', task });
@@ -71,6 +73,21 @@ class Agent {
         }
       } catch (e) {
         this.isMuted = false;
+      }
+    }
+
+    // Enable ADB keyboard to hide virtual keyboard if requested
+    if (hideVirtualKeyboard) {
+      try {
+        this.log(`   ⌨️ Enabling ADB keyboard (hiding virtual keyboard)...`);
+        const result = await this.rba.call(this.sn, 'enable_adb_keyboard', {});
+        if (result.success) {
+          this.log(`   ⌨️ ADB keyboard enabled`);
+        } else {
+          this.log(`   ⌨️ ADB keyboard failed: ${result.message || 'unknown error'}`);
+        }
+      } catch (e) {
+        this.log(`   ⌨️ ADB keyboard error: ${e.message}`);
       }
     }
 
@@ -143,6 +160,17 @@ class Agent {
     console.log(`\n${'═'.repeat(60)}`);
     this.log(`🏁 ${success ? 'SUCCESS' : 'STOPPED'} (${step} steps, ${elapsed}s) - ${reason}`);
     console.log(`${'═'.repeat(60)}\n`);
+
+    // Disable ADB keyboard if it was enabled
+    if (hideVirtualKeyboard) {
+      try {
+        this.log(`   ⌨️ Disabling ADB keyboard (restoring virtual keyboard)...`);
+        await this.rba.call(this.sn, 'disable_adb_keyboard', {});
+        this.log(`   ⌨️ ADB keyboard disabled`);
+      } catch (e) {
+        this.log(`   ⌨️ ADB keyboard disable error: ${e.message}`);
+      }
+    }
 
     await this.report({ uuid: this.sn, task_id: taskId, type: 'done', payload: { success, steps: step, elapsed, reason } });
     return { success, task, taskId, steps: step, elapsed, reason, history, fatalError };

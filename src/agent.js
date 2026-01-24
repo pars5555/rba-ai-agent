@@ -133,25 +133,13 @@ class Agent {
         break;
       }
 
-      // 3. CHECK COMPLETION
-      if (action.complete === true) {
-        console.log(`\n✅ TASK COMPLETE: ${action.reason || 'AI marked as complete'}`);
-        completed = true;
-        history.push({ step, action, result: { success: true, message: 'Completed' }, state: this.summarizeState(state) });
-        
-        await this.report({
-          uuid: this.sn,
-          task_id: taskId,
-          type: 'process',
-          task,
-          step,
-          payload: { action, completed: true, state: this.summarizeState(state) }
-        });
-        break;
+      // 3. EXECUTE - Run the action (even if complete=true, execute the action first!)
+      // Only skip if action is explicitly "none" or missing
+      let result = { success: true, skipped: true };
+      
+      if (action.action && action.action !== 'none') {
+        result = await this.rba.call(this.sn, action.action, action.params || {});
       }
-
-      // 4. EXECUTE - Run the action
-      const result = await this.rba.call(this.sn, action.action, action.params || {});
 
       // Check for fatal errors
       if (result._fatal) {
@@ -197,10 +185,12 @@ class Agent {
       }
 
       // Log result
-      const icon = result.success ? '✅' : '❌';
-      console.log(`   ${icon} Result: ${result.success ? 'OK' : result.error || 'Failed'}`);
+      if (!result.skipped) {
+        const icon = result.success ? '✅' : '❌';
+        console.log(`   ${icon} Result: ${result.success ? 'OK' : result.error || 'Failed'}`);
+      }
 
-      // 5. RECORD - Add to history
+      // 4. RECORD - Add to history
       history.push({
         step,
         action,
@@ -218,9 +208,17 @@ class Agent {
         payload: {
           action,
           result: { success: result.success, error: result.error },
+          completed: action.complete === true,
           state: this.summarizeState(state)
         }
       });
+
+      // 5. CHECK COMPLETION - After executing the action!
+      if (action.complete === true) {
+        console.log(`\n✅ TASK COMPLETE: ${action.reason || 'AI marked as complete'}`);
+        completed = true;
+        break;
+      }
 
       // Pause between steps
       if (pauseMs > 0 && step < maxSteps) {

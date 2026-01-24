@@ -302,11 +302,8 @@ class Agent {
    * Observe current screen state
    */
   async observe() {
-    const response = await this.rba.call(this.sn, 'get_device_snapshot', {
-      include_screen_analysis: true,
-      include_ui_nodes: true,
-      ui_nodes_limit: 500
-    });
+    // Simplified API - no parameters needed, returns everything
+    const response = await this.rba.call(this.sn, 'get_device_snapshot', {});
 
     if (!response.success) {
       return { 
@@ -316,14 +313,16 @@ class Agent {
       };
     }
 
-    const snapshot = response.snapshot || {};
-
-    // Parse and structure the state
+    // New API returns fields at root level (not nested in 'snapshot')
     const state = {
-      foregroundPackage: snapshot.foreground_package,
-      screenWidth: snapshot.screen_width,
-      screenHeight: snapshot.screen_height,
-      installedApps: snapshot.installed_apps,
+      foregroundPackage: response.foreground_package,
+      screenWidth: response.screen_width,
+      screenHeight: response.screen_height,
+      installedApps: response.installed_apps,
+      batteryLevel: response.battery_level,
+      isWifiEnabled: response.is_wifi_enabled,
+      isWifiConnected: response.is_wifi_connected,
+      isStatusBarEnabled: response.is_statusbar_enabled,
       screenAnalysis: null,
       accessibilityNodes: null,
       focusedElement: null,
@@ -331,8 +330,8 @@ class Agent {
     };
 
     // Screen analysis (OCR)
-    if (snapshot.screen_analysis) {
-      const sa = snapshot.screen_analysis;
+    if (response.screen_analysis) {
+      const sa = response.screen_analysis;
       state.screenAnalysis = {
         screenWidth: sa.screenWidth,
         screenHeight: sa.screenHeight,
@@ -353,7 +352,7 @@ class Agent {
     }
 
     // Accessibility nodes
-    const nodes = snapshot.ui_nodes?.nodes || [];
+    const nodes = response.ui_nodes?.nodes || [];
     if (nodes.length > 0) {
       // Detect focused element
       const focusedNode = nodes.find(n => n.focused === true);
@@ -371,7 +370,7 @@ class Agent {
       }
 
       // Detect if keyboard might be visible (heuristic: many small clickable nodes at bottom)
-      const screenHeight = snapshot.screen_height || 2000;
+      const screenHeight = response.screen_height || 2000;
       const bottomNodes = nodes.filter(n =>
           n.bounds &&
           n.bounds.top > screenHeight * 0.6 &&

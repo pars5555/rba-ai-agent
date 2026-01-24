@@ -158,6 +158,11 @@ ${commandDocs}
 
 12. **Keyboard visible = ready to type** - When you see keyboard is visible, use type_text immediately.
 
+13. if the task is to open browser and there is already browser foregrounded then try to open a new tab instead of using the existing tab.
+
+14. if user ask something that need to search in the browser then please parse the user prompt and extract the search query and then use that to search in the browser, like if user ask to "check gold price", you should search for "gold price" .
+
+
 ## RESPONSE FORMAT
 
 Return valid JSON with these fields:

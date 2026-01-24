@@ -1,29 +1,25 @@
 {
   "get_device_snapshot": {
     "endpoint": "/device/getDeviceSnapshot",
-    "description": "Get complete device state: foreground app, screen analysis (OCR text + UI elements), accessibility nodes, installed apps. This is your primary observation tool.",
-    "parameters": {
-      "include_screen_analysis": { "type": "boolean", "default": true, "description": "Include OCR and UI detection" },
-      "include_ui_nodes": { "type": "boolean", "default": true, "description": "Include accessibility tree" },
-      "ui_nodes_limit": { "type": "number", "default": 500, "description": "Max accessibility nodes to return" }
-    },
+    "description": "Get complete device state in one call. Returns: device info (brand, model, screen size), foreground app, screen analysis (OCR text + UI elements), accessibility nodes, installed apps. This is your PRIMARY observation tool. Use screen_width/screen_height as the ONLY valid coordinate bounds for input actions.",
+    "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether the snapshot was successful" },
-      "snapshot": { 
-        "type": "object", 
-        "required": true,
-        "description": "Device snapshot data",
-        "properties": {
-          "foreground_package": { "type": "string", "description": "Currently foreground app package" },
-          "screen_width": { "type": "number", "description": "Screen width in pixels" },
-          "screen_height": { "type": "number", "description": "Screen height in pixels" },
-          "installed_apps": { "type": "object", "description": "Map of package -> version" },
-          "screen_analysis": { "type": "object", "description": "OCR and UI analysis" },
-          "ui_nodes": { "type": "object", "description": "Accessibility nodes" }
-        }
-      }
+      "brand": { "type": "string", "description": "Device brand (e.g., TCL, Samsung)" },
+      "model": { "type": "string", "description": "Device model" },
+      "screen_width": { "type": "number", "required": true, "description": "Screen width in pixels - use for input coordinate bounds" },
+      "screen_height": { "type": "number", "required": true, "description": "Screen height in pixels - use for input coordinate bounds" },
+      "foreground_package": { "type": "string", "description": "Currently foreground app package" },
+      "battery_level": { "type": "number", "description": "Battery level 0-100" },
+      "is_wifi_enabled": { "type": "boolean", "description": "Whether WiFi is enabled" },
+      "is_wifi_connected": { "type": "boolean", "description": "Whether WiFi is connected" },
+      "installed_apps": { "type": "object", "description": "Map of package -> version" },
+      "screen_analysis": { "type": "object", "description": "OCR text elements and UI detection results" },
+      "ui_nodes": { "type": "object", "description": "Accessibility nodes with count and nodes array" },
+      "is_statusbar_enabled": { "type": "boolean", "description": "Whether status bar is disabled (locked)" }
     },
-    "safe": true
+    "safe": true,
+    "notes": "This is the primary observation command. Call it before each action to get current screen state. Response fields are at root level (not nested in 'snapshot')."
   },
 
   "go_home": {
@@ -127,11 +123,12 @@
 
   "input_tap": {
     "endpoint": "/device/performTap",
-    "description": "Tap at specific screen coordinates. Use EXACT coordinates from get_device_snapshot observation.",
+    "description": "Tap at specific screen coordinates. Use EXACT coordinates from get_device_snapshot observation. CRITICAL: NEVER tap outside the device screen. Valid bounds: 0 <= x < screen_width and 0 <= y < screen_height (from the latest snapshot).",
     "parameters": {
-      "x": { "type": "number", "required": true, "description": "X coordinate (horizontal position)" },
-      "y": { "type": "number", "required": true, "description": "Y coordinate (vertical position)" },
-      "duration_ms": { "type": "number", "default": 100, "description": "Tap duration in ms. Use 500+ for long-press." }
+      "x": { "type": "number", "required": true, "description": "X coordinate in pixels. MUST satisfy 0 <= x < screen_width." },
+      "y": { "type": "number", "required": true, "description": "Y coordinate in pixels. MUST satisfy 0 <= y < screen_height." },
+      "duration_ms": { "type": "number", "default": 100, "description": "Tap duration in ms. Use 500+ for long-press." },
+      "draw_tap": { "type": "boolean", "default": false, "description": "draw a tap overlay on screen for visual debugging" }
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether tap was performed" }
@@ -141,12 +138,12 @@
 
   "input_swipe": {
     "endpoint": "/device/performSwipe",
-    "description": "Swipe from point A to point B. For SCROLL DOWN (see content below): start high (y1=1500), end low (y2=500). For SCROLL UP: start low, end high.",
+    "description": "Swipe from point A to point B. CRITICAL: NEVER swipe outside the device screen. All coordinates MUST satisfy 0 <= x < screen_width and 0 <= y < screen_height (from the latest snapshot). For SCROLL DOWN (see content below): start high (y1), end low (y2). For SCROLL UP: start low, end high.",
     "parameters": {
-      "x1": { "type": "number", "required": true, "description": "Start X coordinate" },
-      "y1": { "type": "number", "required": true, "description": "Start Y coordinate" },
-      "x2": { "type": "number", "required": true, "description": "End X coordinate" },
-      "y2": { "type": "number", "required": true, "description": "End Y coordinate" },
+      "x1": { "type": "number", "required": true, "description": "Start X coordinate in pixels. MUST be within [0, screen_width)." },
+      "y1": { "type": "number", "required": true, "description": "Start Y coordinate in pixels. MUST be within [0, screen_height)." },
+      "x2": { "type": "number", "required": true, "description": "End X coordinate in pixels. MUST be within [0, screen_width)." },
+      "y2": { "type": "number", "required": true, "description": "End Y coordinate in pixels. MUST be within [0, screen_height)." },
       "duration_ms": { "type": "number", "default": 300, "description": "Swipe duration (longer = slower swipe)" }
     },
     "response": {
@@ -157,10 +154,10 @@
 
   "input_scroll": {
     "endpoint": "/device/performScroll",
-    "description": "Scroll at a specific location using scroll events (like mouse wheel)",
+    "description": "Scroll at a specific location using scroll events (like mouse wheel). CRITICAL: NEVER scroll outside the device screen. Coordinates MUST be within bounds from the latest get_device_snapshot (0 <= x < screen_width, 0 <= y < screen_height).",
     "parameters": {
-      "x": { "type": "number", "required": true, "description": "Scroll center X coordinate" },
-      "y": { "type": "number", "required": true, "description": "Scroll center Y coordinate" },
+      "x": { "type": "number", "required": true, "description": "Scroll center X coordinate in pixels. MUST be within [0, screen_width)." },
+      "y": { "type": "number", "required": true, "description": "Scroll center Y coordinate in pixels. MUST be within [0, screen_height)." },
       "ticks": { "type": "number", "default": 120, "description": "Scroll amount. Positive=scroll up, Negative=scroll down. 120 = 1 page." }
     },
     "response": {

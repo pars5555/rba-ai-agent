@@ -160,7 +160,6 @@ ${commandDocs}
 
 13. if the task is to open browser and there is already browser foregrounded then try to open a new tab instead of using the existing tab.
 
-14. if user ask something that need to search in the browser then please parse the user prompt and extract the search query and then use that to search in the browser, like if user ask to "check gold price", you should search for "gold price" .
 
 
 ## RESPONSE FORMAT
@@ -206,48 +205,7 @@ When task is complete:
       }).join('\n');
     }
 
-    // Check for repeated actions (loop detection) - especially for taps
-    let loopWarning = '';
-    if (history.length >= 1) {
-      const last = history[history.length - 1];
-      const lastAction = last?.action?.action;
-
-      // If last action was a tap and it succeeded, warn about typing
-      if (lastAction === 'input_tap' && last?.result?.success) {
-        // Check if there's a focused element or keyboard visible
-        if (state.focusedElement || state.keyboardLikelyVisible) {
-          loopWarning = `
-⚠️ INPUT READY: You just tapped and now there's a focused input/keyboard visible.
-→ Your next action should be type_text, NOT another tap!
-`;
-        }
-      }
-
-      // Check for repeated identical actions
-      if (history.length >= 2) {
-        const prev = history[history.length - 2];
-        const lastSig = `${lastAction}:${JSON.stringify(last?.action?.params || {})}`;
-        const prevSig = `${prev?.action?.action}:${JSON.stringify(prev?.action?.params || {})}`;
-
-        if (lastSig === prevSig) {
-          if (lastAction === 'input_tap') {
-            loopWarning = `
-⚠️ LOOP DETECTED: You tapped the same location twice!
-→ If you tapped an input field, it IS focused now — use type_text
-→ If you tapped a button that didn't respond, try a different approach
-→ DO NOT tap the same location again!
-`;
-          } else {
-            loopWarning = `
-⚠️ LOOP WARNING: Last two actions are identical.
-→ Choose a DIFFERENT action or mark complete if task is done.
-`;
-          }
-        }
-      }
-    }
-
-    // Format screen state
+    // Format screen state - pass raw JSON
     let screenInfo = this.formatScreenState(state);
 
     return `## TASK
@@ -255,8 +213,8 @@ When task is complete:
 
 ## PREVIOUS ACTIONS
 ${historyStr}
-${loopWarning}
-## CURRENT SCREEN STATE
+
+## CURRENT SCREEN STATE (raw API response)
 ${screenInfo}
 
 ## YOUR DECISION
@@ -265,77 +223,13 @@ Return JSON only.`;
   }
 
   /**
-   * Format screen state for prompt
+   * Format screen state for prompt - just pass the raw JSON, AI knows the format
    */
   formatScreenState(state) {
     if (!state) return 'No screen state available';
-
-    let info = '';
-
-    // Foreground app
-    if (state.foregroundPackage) {
-      info += `📱 Foreground app: ${state.foregroundPackage}\n`;
-    }
-
-    // Screen size
-    if (state.screenWidth && state.screenHeight) {
-      info += `📐 Screen: ${state.screenWidth}x${state.screenHeight}\n`;
-    }
-
-    // FOCUS STATE - Show prominently at the top!
-    if (state.focusedElement) {
-      info += `\n🎯 FOCUSED ELEMENT: ${state.focusedElement.className} "${state.focusedElement.text || state.focusedElement.resourceId || '[empty]'}"\n`;
-      if (state.focusedElement.isEditText) {
-        info += `   ✅ INPUT FIELD IS FOCUSED — use type_text now!\n`;
-      }
-    }
-
-    if (state.keyboardLikelyVisible) {
-      info += `⌨️ KEYBOARD IS VISIBLE — ready for type_text!\n`;
-    }
-
-    // Installed apps (if available, just count)
-    if (state.installedApps) {
-      const count = Object.keys(state.installedApps).length;
-      info += `📦 Installed apps: ${count}\n`;
-    }
-
-    // Accessibility nodes (most reliable for coordinates)
-    if (state.accessibilityNodes && state.accessibilityNodes.length > 0) {
-      info += `\n♿ ACCESSIBILITY NODES (use these coordinates!):\n`;
-      state.accessibilityNodes.slice(0, 20).forEach((node, i) => {
-        const label = node.text || node.contentDescription || '[no text]';
-        const type = node.className || 'unknown';
-        const pos = node.center ? `(${node.center.x}, ${node.center.y})` : 'no pos';
-        const flags = [
-          node.clickable ? '🖱️click' : '',
-          node.focused ? '🎯FOCUSED' : '',
-          node.selected ? '✓sel' : ''
-        ].filter(Boolean).join(' ');
-        info += `  ${i + 1}. ${type}: "${label.slice(0, 40)}" at ${pos} ${flags}\n`;
-      });
-    }
-
-    // Screen analysis (OCR text)
-    if (state.screenAnalysis?.textElements?.length > 0) {
-      info += `\n📝 TEXT ON SCREEN (from OCR):\n`;
-      state.screenAnalysis.textElements.slice(0, 15).forEach((el, i) => {
-        const text = el.text || '[empty]';
-        const pos = el.center ? `(${el.center.x}, ${el.center.y})` : 'no pos';
-        info += `  ${i + 1}. "${text.slice(0, 50)}" at ${pos}\n`;
-      });
-    }
-
-    // UI elements
-    if (state.screenAnalysis?.uiElements?.length > 0) {
-      info += `\n🔲 UI ELEMENTS:\n`;
-      state.screenAnalysis.uiElements.slice(0, 10).forEach((el, i) => {
-        const pos = el.center ? `(${el.center.x}, ${el.center.y})` : 'no pos';
-        info += `  ${i + 1}. ${el.type || 'unknown'} at ${pos}\n`;
-      });
-    }
-
-    return info || 'Screen state empty';
+    
+    // Pass raw API response as JSON - AI knows the format from registry
+    return JSON.stringify(state, null, 2);
   }
 }
 

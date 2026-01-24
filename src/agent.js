@@ -98,16 +98,8 @@ class Agent {
         break;
       }
 
-      console.log(`   📱 App: ${state.foregroundPackage || 'unknown'}`);
-      console.log(`   📊 Nodes: ${state.accessibilityNodes?.length || 0}, Text: ${state.screenAnalysis?.textElements?.length || 0}`);
-
-      // Log focus state
-      if (state.focusedElement) {
-        console.log(`   🎯 Focused: ${state.focusedElement.className} "${state.focusedElement.text || state.focusedElement.resourceId || ''}"`);
-      }
-      if (state.keyboardLikelyVisible) {
-        console.log(`   ⌨️ Keyboard visible`);
-      }
+      console.log(`   📱 App: ${state.foreground_package || 'unknown'}`);
+      console.log(`   📊 Screen: ${state.screen_width}x${state.screen_height}, Nodes: ${state.ui_nodes?.count || 0}, Text: ${state.screen_analysis?.textCount || 0}`);
 
       // 2. DECIDE - Ask AI for next action
       let action;
@@ -299,123 +291,20 @@ class Agent {
   }
 
   /**
-   * Observe current screen state
+   * Observe current screen state - returns raw API response, AI knows the format
    */
   async observe() {
-    // Simplified API - no parameters needed, returns everything
-    const response = await this.rba.call(this.sn, 'get_device_snapshot', {});
-
-    if (!response.success) {
-      return { 
-        _fatal: response._fatal,
-        _validationError: response._validationError,
-        error: response.error
-      };
-    }
-
-    // New API returns fields at root level (not nested in 'snapshot')
-    const state = {
-      foregroundPackage: response.foreground_package,
-      screenWidth: response.screen_width,
-      screenHeight: response.screen_height,
-      installedApps: response.installed_apps,
-      batteryLevel: response.battery_level,
-      isWifiEnabled: response.is_wifi_enabled,
-      isWifiConnected: response.is_wifi_connected,
-      isStatusBarEnabled: response.is_statusbar_enabled,
-      screenAnalysis: null,
-      accessibilityNodes: null,
-      focusedElement: null,
-      keyboardLikelyVisible: false
-    };
-
-    // Screen analysis (OCR)
-    if (response.screen_analysis) {
-      const sa = response.screen_analysis;
-      state.screenAnalysis = {
-        screenWidth: sa.screenWidth,
-        screenHeight: sa.screenHeight,
-        textCount: sa.textCount,
-        uiCount: sa.uiCount,
-        textElements: (sa.textElements || []).slice(0, 20).map(el => ({
-          text: el.text,
-          center: el.center,
-          bounds: el.bounds,
-          confidence: el.confidence
-        })),
-        uiElements: (sa.uiElements || []).slice(0, 15).map(el => ({
-          type: el.type,
-          center: el.center,
-          bounds: el.bounds
-        }))
-      };
-    }
-
-    // Accessibility nodes
-    const nodes = response.ui_nodes?.nodes || [];
-    if (nodes.length > 0) {
-      // Detect focused element
-      const focusedNode = nodes.find(n => n.focused === true);
-      if (focusedNode) {
-        state.focusedElement = {
-          text: focusedNode.text,
-          className: focusedNode.className?.split('.').pop(),
-          resourceId: focusedNode.resourceId,
-          isEditText: focusedNode.className?.includes('EditText'),
-          center: focusedNode.bounds ? {
-            x: Math.round((focusedNode.bounds.left + focusedNode.bounds.right) / 2),
-            y: Math.round((focusedNode.bounds.top + focusedNode.bounds.bottom) / 2)
-          } : null
-        };
-      }
-
-      // Detect if keyboard might be visible (heuristic: many small clickable nodes at bottom)
-      const screenHeight = response.screen_height || 2000;
-      const bottomNodes = nodes.filter(n =>
-          n.bounds &&
-          n.bounds.top > screenHeight * 0.6 &&
-          n.clickable &&
-          (n.bounds.bottom - n.bounds.top) < 150  // Small height = likely keyboard key
-      );
-      state.keyboardLikelyVisible = bottomNodes.length > 10;
-
-      // Filter to interesting nodes (clickable, focusable, text inputs)
-      const interesting = nodes
-          .filter(n => n.clickable || n.focusable || n.focused ||
-              n.className?.includes('EditText') ||
-              n.className?.includes('Button'))
-          .slice(0, 30);
-
-      state.accessibilityNodes = interesting.map(n => ({
-        text: n.text,
-        className: n.className?.split('.').pop(),
-        contentDescription: n.contentDescription,
-        resourceId: n.resourceId,
-        bounds: n.bounds,
-        center: n.bounds ? {
-          x: Math.round((n.bounds.left + n.bounds.right) / 2),
-          y: Math.round((n.bounds.top + n.bounds.bottom) / 2)
-        } : null,
-        clickable: n.clickable,
-        focusable: n.focusable,
-        focused: n.focused,
-        selected: n.selected
-      }));
-    }
-
-    return state;
+    return await this.rba.call(this.sn, 'get_device_snapshot', {});
   }
 
   /**
-   * Create a brief state summary for history
+   * Create a brief state summary for history (for logging only)
    */
   summarizeState(state) {
     return {
-      app: state.foregroundPackage,
-      nodes: state.accessibilityNodes?.length || 0,
-      texts: state.screenAnalysis?.textElements?.length || 0,
-      focused: state.focusedElement?.className || null,
-      keyboard: state.keyboardLikelyVisible
+      app: state.foreground_package,
+      nodes: state.ui_nodes?.count || 0,
+      texts: state.screen_analysis?.textCount || 0
     };
   }
 

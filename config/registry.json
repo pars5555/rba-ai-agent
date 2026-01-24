@@ -15,6 +15,7 @@
           "foreground_package": { "type": "string" },
           "flashlight_status": { "type": "string", "description": "Flashlight state: 'on', 'off', or error message" },
           "is_statusbar_enabled": { "type": "boolean", "description": "Whether status bar is enabled" },
+          "is_muted": { "type": "boolean", "description": "Whether device volume is muted" },
           "ui_nodes": { "type": "object", "description": "{count, nodes:[{text,desc,class,bounds:{cx,cy},clickable,focused,editable}...]}" }
         }
       }
@@ -399,7 +400,7 @@
   },
   "speak": {
     "endpoint": "/device/speak",
-    "description": "Text-to-speech - speak text aloud on device. Stops any ongoing speech first.",
+    "description": "Text-to-speech - speak text aloud on device. Automatically stops any ongoing speech first.",
     "parameters": {
       "text": {
         "type": "string",
@@ -427,10 +428,9 @@
       "message": { "type": "string", "description": "Status message" }
     }
   },
-
   "stop_speech": {
     "endpoint": "/device/stopSpeech",
-    "description": "Stop any ongoing text-to-speech",
+    "description": "Stop any ongoing text-to-speech playback.",
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true },

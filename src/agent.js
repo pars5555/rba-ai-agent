@@ -13,6 +13,7 @@ class Agent {
     this.sn = deviceSerial;
     this.rba = new RBAClient();
     this.llm = new LLMClient();
+    this.isMuted = false; // Track mute status for TTS
   }
 
   async run(task, options = {}) {
@@ -34,8 +35,14 @@ class Agent {
 
     await this.report({ uuid: this.sn, task_id: taskId, type: 'start', task });
 
-    // Announce task start
+    // Check initial mute status if TTS is enabled
     if (speak) {
+      try {
+        const snapshot = await this.rba.call(this.sn, 'get_device_snapshot', {});
+        this.isMuted = snapshot?.snapshot?.is_muted || false;
+      } catch (e) {
+        this.isMuted = false;
+      }
       await this.speak(`Starting task: ${task}`);
     }
 
@@ -125,9 +132,15 @@ class Agent {
 
   /**
    * Speak text on device via TTS
+   * Automatically unmutes device if muted
    */
   async speak(text) {
     try {
+      // Ensure device is not muted before speaking
+      if (this.isMuted) {
+        await this.rba.call(this.sn, 'volume_mute', { mute: false });
+        this.isMuted = false;
+      }
       console.log(`   🔊 "${text}"`);
       await this.rba.call(this.sn, 'speak', { text });
     } catch (e) {

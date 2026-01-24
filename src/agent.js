@@ -4,16 +4,39 @@ import { config } from './config.js';
 import { randomUUID } from 'crypto';
 
 /**
+ * Get current timestamp string HH:MM:SS.mmm
+ */
+function ts() {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  const ms = String(now.getMilliseconds()).padStart(3, '0');
+  return `${h}:${m}:${s}.${ms}`;
+}
+
+/**
  * Pure Bridge Agent with TTS feedback
  *
- * Loop: Ask AI -> Speak description -> Execute command -> Repeat
+ * Loop: Ask AI -> Speak reason -> Execute command -> Repeat
+ *
+ * AI controls ALL speech via the "reason" field.
+ * AI provides debugging info via the "details" field.
  */
 class Agent {
   constructor(deviceSerial) {
     this.sn = deviceSerial;
     this.rba = new RBAClient();
     this.llm = new LLMClient();
-    this.isMuted = false; // Track mute status for TTS
+    this.isMuted = false;
+  }
+
+  log(msg) {
+    console.log(`[${ts()}] ${msg}`);
+  }
+
+  logError(msg) {
+    console.error(`[${ts()}] ${msg}`);
   }
 
   async run(task, options = {}) {
@@ -25,25 +48,30 @@ class Agent {
 
     // TTS options
     const speak = options.speak !== false; // enabled by default
-    const speakLang = options.speakLang || 'en';
 
     console.log(`\n${'═'.repeat(60)}`);
-    console.log(`🤖 AGENT: "${task}"`);
-    console.log(`   Device: ${this.sn} | Max: ${maxSteps} steps, ${maxDurationMs/1000}s`);
-    console.log(`   TTS: ${speak ? 'ON' : 'OFF'}${speak ? ` (${speakLang})` : ''}`);
+    this.log(`🤖 AGENT: "${task}"`);
+    this.log(`   Device: ${this.sn} | Max: ${maxSteps} steps, ${maxDurationMs/1000}s`);
+    this.log(`   TTS: ${speak ? 'ON' : 'OFF'}`);
     console.log(`${'═'.repeat(60)}`);
 
     await this.report({ uuid: this.sn, task_id: taskId, type: 'start', task });
 
-    // Check initial mute status if TTS is enabled
+    // Check initial mute status and unmute if TTS is enabled
     if (speak) {
       try {
         const snapshot = await this.rba.call(this.sn, 'get_device_snapshot', {});
         this.isMuted = snapshot?.snapshot?.is_muted || false;
+
+        if (this.isMuted) {
+          this.log(`   🔇 Device is muted, unmuting...`);
+          await this.rba.call(this.sn, 'volume_mute', { mute: false });
+          this.isMuted = false;
+          this.log(`   🔊 Device unmuted`);
+        }
       } catch (e) {
         this.isMuted = false;
       }
-      await this.speak(`Starting task: ${task}`);
     }
 
     const history = [];
@@ -57,37 +85,39 @@ class Agent {
       // Check timeout
       if (Date.now() - startTime > maxDurationMs) {
         timedOut = true;
-        console.log(`   ⏱️ Timeout: ${maxDurationMs/1000}s exceeded`);
-        if (speak) await this.speak('Task timed out');
+        this.log(`   ⏱️ Timeout: ${maxDurationMs/1000}s exceeded`);
         break;
       }
       step++;
-      console.log(`\n── Step ${step} ──`);
+      this.log(`\n── Step ${step} ──`);
 
       // Ask AI what to do
       let action;
       try {
         action = await this.llm.getNextAction(task, history, lastResult);
-        console.log(`   AI: ${action.action || 'complete'} ${action.reason ? '- ' + action.reason : ''}`);
+
+        // Log AI decision
+        this.log(`   AI: ${action.action || 'complete'}${action.reason ? ' - ' + action.reason : ''}`);
+
+        // Log details for debugging (if provided)
+        if (action.details) {
+          this.log(`   📋 Details: ${action.details}`);
+        }
       } catch (error) {
-        console.error(`   ❌ LLM: ${error.message}`);
+        this.logError(`   ❌ LLM: ${error.message}`);
         fatalError = { type: 'llm_error', message: error.message };
-        if (speak) await this.speak('AI error occurred');
         break;
+      }
+
+      // Speak AI's reason (fire-and-forget)
+      if (speak && action.reason) {
+        this.speak(action.reason);
       }
 
       // Check completion
       if (action.complete) {
         completed = true;
-        if (speak && action.reason) {
-          await this.speak(action.reason);
-        }
         break;
-      }
-
-      // Speak the description/reason before executing
-      if (speak && action.reason) {
-        await this.speak(action.reason);
       }
 
       // Execute command
@@ -96,17 +126,11 @@ class Agent {
 
       if (result._fatal) {
         fatalError = result._fatal;
-        console.log(`   ❌ Fatal: ${fatalError.message}`);
-        if (speak) await this.speak('Fatal error: ' + fatalError.message);
+        this.log(`   ❌ Fatal: ${fatalError.message}`);
         break;
       }
 
-      console.log(`   ${result.success ? '✓' : '✗'} ${result.success ? 'OK' : result.error || 'Failed'}`);
-
-      // Speak failure if action failed
-      if (!result.success && speak) {
-        await this.speak(`Failed: ${result.error || 'unknown error'}`);
-      }
+      this.log(`   ${result.success ? '✓' : '✗'} ${result.success ? 'OK' : result.error || 'Failed'}`);
 
       history.push({ action: action.action, params: action.params, success: result.success });
       await this.report({ uuid: this.sn, task_id: taskId, type: 'process', step, payload: { action, success: result.success } });
@@ -117,36 +141,31 @@ class Agent {
     const reason = fatalError ? 'fatal_error' : timedOut ? 'timeout' : completed ? 'completed' : 'max_steps';
 
     console.log(`\n${'═'.repeat(60)}`);
-    console.log(`🏁 ${success ? 'SUCCESS' : 'STOPPED'} (${step} steps, ${elapsed}s) - ${reason}`);
+    this.log(`🏁 ${success ? 'SUCCESS' : 'STOPPED'} (${step} steps, ${elapsed}s) - ${reason}`);
     console.log(`${'═'.repeat(60)}\n`);
-
-    // Announce completion
-    if (speak) {
-      const msg = success ? 'Task completed successfully' : `Task stopped: ${reason}`;
-      await this.speak(msg);
-    }
 
     await this.report({ uuid: this.sn, task_id: taskId, type: 'done', payload: { success, steps: step, elapsed, reason } });
     return { success, task, taskId, steps: step, elapsed, reason, history, fatalError };
   }
 
   /**
-   * Speak text on device via TTS
-   * Automatically unmutes device if muted
+   * Speak text on device via TTS (fire-and-forget)
+   * @param {string} text - Text to speak
+   * @param {number} speed - Speech rate (0.5-2.0), default 1.0
    */
-  async speak(text) {
-    try {
-      // Ensure device is not muted before speaking
-      if (this.isMuted) {
-        await this.rba.call(this.sn, 'volume_mute', { mute: false });
-        this.isMuted = false;
+  speak(text, speed = 1.0) {
+    (async () => {
+      try {
+        if (this.isMuted) {
+          await this.rba.call(this.sn, 'volume_mute', { mute: false });
+          this.isMuted = false;
+        }
+        this.log(`   🔊 "${text}"`);
+        await this.rba.call(this.sn, 'speak', { text, speed });
+      } catch (e) {
+        this.log(`   🔇 TTS failed: ${e.message}`);
       }
-      console.log(`   🔊 "${text}"`);
-      await this.rba.call(this.sn, 'speak', { text });
-    } catch (e) {
-      // Silent fail - don't break main flow
-      console.log(`   🔇 TTS failed: ${e.message}`);
-    }
+    })();
   }
 
   async report(event) {

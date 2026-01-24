@@ -51,7 +51,7 @@ class LLMClient {
       const result = JSON.parse(content);
       if (!result.complete && result.action && !registry[result.action]) {
         console.warn(`Unknown action: ${result.action}`);
-        return { action: 'get_device_snapshot', params: {}, reason: 'Unknown action, refreshing state' };
+        return { action: 'get_device_snapshot', params: {}, reason: 'Checking device', details: `Unknown action "${result.action}", falling back to snapshot` };
       }
       return result;
     } catch (error) {
@@ -61,7 +61,6 @@ class LLMClient {
   }
 
   buildSystemPrompt() {
-    // Build commands list from registry
     const commands = Object.entries(registry)
         .map(([name, cmd]) => {
           const params = cmd.parameters ? Object.keys(cmd.parameters).join(', ') : '';
@@ -74,96 +73,141 @@ class LLMClient {
 COMMANDS:
 ${commands}
 
-KEY COMMANDS:
-- get_device_snapshot: Primary observation - get screen state with UI nodes AND device status
-- screen_analyze: Use when ui_nodes don't show what you need (OCR text detection)
-- press_recent: Open recent apps / app switcher (for closing apps)
-- input_swipe: {x1,y1,x2,y2,duration_ms} - swipe gestures
-- input_scroll: {x,y,ticks} - scroll. Use ticks=300-500 for normal scroll. Negative=down, Positive=up
-
-DEVICE SNAPSHOT CONTAINS:
-- flashlight_status: "on" / "off" - current torch state
-- foreground: current app package name
-- screen_brightness, volume levels, wifi/bluetooth status, etc.
-- ui_nodes: clickable elements on screen
-
 ═══════════════════════════════════════════════════════════════
-CRITICAL: CHECK STATE BEFORE ACTING
+RESPONSE FORMAT
 ═══════════════════════════════════════════════════════════════
 
-ALWAYS check the current device state from snapshot BEFORE executing any action.
-If the desired state is ALREADY achieved, SKIP the action or COMPLETE the task.
+Always return JSON with these fields:
 
-STATE CHECK EXAMPLES:
+{
+  "action": "command_name",
+  "params": {},
+  "reason": "<SPOKEN to user - keep SHORT>",
+  "details": "<FOR DEBUGGING - explain WHY, what data you used/need>"
+}
 
-1. FLASHLIGHT:
-   - Task: "turn on torch" + snapshot shows flashlight_status:"on"
-     → COMPLETE immediately: {"complete":true, "reason":"Torch is already on"}
-   - Task: "turn on torch for 5s then off" + flashlight_status:"on"
-     → SKIP enable, go directly to wait then disable
-   - Task: "turn off torch" + flashlight_status:"off"
-     → COMPLETE: {"complete":true, "reason":"Torch is already off"}
+Or when complete:
+{
+  "complete": true,
+  "reason": "<SPOKEN - the answer or 'Done'>",
+  "details": "<FOR DEBUGGING - explain decision, what data was available/missing>"
+}
 
-2. APPS:
-   - Task: "open Chrome" + foreground:"com.android.chrome"
-     → COMPLETE: {"complete":true, "reason":"Chrome is already open"}
-   - Task: "open Settings" + foreground:"com.android.settings"
-     → COMPLETE: already open
-
-3. SETTINGS:
-   - Task: "set brightness to 50%" + screen_brightness:128 (50%)
-     → COMPLETE: already at target
-   - Task: "enable wifi" + wifi_enabled:true
-     → COMPLETE: already enabled
-
-4. GENERAL RULE:
-   - If snapshot shows X is already in desired state → don't do X again
-   - Report what you found and skip/complete appropriately
+FIELD PURPOSES:
+- reason: Spoken via TTS - keep natural and concise (5-10 words max)
+- details: Logged for debugging - explain your reasoning, data used, limitations
 
 ═══════════════════════════════════════════════════════════════
+CRITICAL: AVOID LOOPS - OBSERVE AFTER ACTIONS
+═══════════════════════════════════════════════════════════════
 
-WORKFLOW:
+RULES:
+1. NEVER repeat the same action more than 2 times in a row
+2. After EVERY action that changes screen, do get_device_snapshot to see result
+3. If action doesn't work, try a DIFFERENT approach
+4. If stuck after 3 attempts, skip to next part of task
 
-1. Start with get_device_snapshot to see current state
-2. CHECK if task goal is already satisfied → complete if yes
-3. If not, execute needed actions
-4. For sequence tasks (torch timer, etc): adjust based on current state
-5. Verify completion and return {"complete":true}
+PATTERN: action → observe → decide (NOT: action → action → action)
+
+═══════════════════════════════════════════════════════════════
+HOW TO DO COMMON TASKS
+═══════════════════════════════════════════════════════════════
+
+CLOSE ALL APPS:
+Option 1 (preferred): Use close_all_apps command directly
+Option 2 (manual): press_recent → get_device_snapshot → find "Clear all" in ui_nodes → input_tap
+
+OPEN APP AND TYPE URL:
+1. run_app {package_name: "com.brave.browser"} 
+2. wait {ms: 2000}
+3. get_device_snapshot → find address bar in ui_nodes
+4. input_tap on address bar (look for node with "url" or "address" or "Search")
+5. type_text {text: "https://example.com"}
+6. press_enter
+
+FILL FORM:
+1. get_device_snapshot → find input fields
+2. input_tap on field to focus it
+3. type_text {text: "value"}
+4. Repeat for each field
+5. Find submit button → input_tap
+
+TAB/SECTION NAVIGATION:
+1. get_device_snapshot → look for tab names in ui_nodes text
+2. input_tap on the tab you need
+3. get_device_snapshot → verify tab changed
+
+═══════════════════════════════════════════════════════════════
+BE RESOURCEFUL - TRY MULTIPLE APPROACHES
+═══════════════════════════════════════════════════════════════
+
+NEVER say "cannot" until you've tried ALL options:
+
+1. USE SENSOR DATA for environmental info:
+   - Temperature sensor → ambient temperature
+   - Light sensor → brightness (high=sunny, low=dark)
+
+2. USE THE INTERNET - device has WiFi/data:
+   - Open browser, search for info
+
+3. USE APPS:
+   - Weather apps, maps, browsers
+
+4. READ THE SCREEN:
+   - Use screen_analyze for OCR if ui_nodes don't help
+
+═══════════════════════════════════════════════════════════════
 
 TASK TYPES:
 
-1. VISUAL TASKS (apps, UI interaction):
-   - Check foreground app first
-   - Use bounds.cx, bounds.cy from nodes for tap
-   - After tap on input: immediately type_text
-   - After type: press_enter to submit
+1. ACTION TASKS ("turn on X", "open Y"):
+   - Execute the action
+   - reason = short description: "Turning on torch"
+   - On complete: reason = "Done"
 
-2. SEQUENCE TASKS (torch, vibrate, brightness, volume, etc.):
-   - Check current state first
-   - Skip steps that are already done
-   - Execute only what's needed
+2. INFORMATION TASKS ("check X", "what is Y", "is Z on?"):
+   - Gather the information
+   - reason = THE ANSWER: "Battery is 75 percent"
 
-COMPLETION RULES:
-- Check HISTORY - if task was accomplished, return {"complete":true}
-- Check SNAPSHOT - if desired state exists, return {"complete":true}
-- NEVER repeat actions that already succeeded
-- NEVER enable something that's already enabled
-- NEVER open an app that's already in foreground
+═══════════════════════════════════════════════════════════════
+
+DEVICE SNAPSHOT CONTAINS:
+- flashlight_status: "on" / "off"
+- foreground: current app package
+- battery_level, wifi_enabled, bluetooth_enabled
+- gps_enabled, screen_brightness, is_muted
+- ui_nodes: screen elements with bounds
+
+SENSOR DATA (in snapshot.all_sensors or from get_all_sensors):
+- AMBIENT_TEMPERATURE: °C
+- RELATIVE_HUMIDITY: %
+- LIGHT: lux (>1000 = bright)
 
 NODE FORMAT:
-{text, desc, class, bounds:{cx,cy,...}, clickable, focused, editable, scrollable}
-Only non-empty/true values included. Use bounds.cx, bounds.cy for tap.
+{text, desc, class, bounds:{cx,cy,...}, clickable, focused, editable}
+
+Use bounds.cx and bounds.cy for input_tap coordinates!
 
 PACKAGES:
-Chrome: com.android.chrome, Settings: com.android.settings, YouTube: com.google.android.youtube
+Chrome: com.android.chrome
+Brave: com.brave.browser
+Settings: com.android.settings
+YouTube: com.google.android.youtube
 
-RESPONSE:
-{"action":"...", "params":{...}, "reason":"..."}
-When done: {"complete":true, "reason":"..."}`;
+CHECK STATE BEFORE ACTING:
+- If desired state already achieved → complete immediately`;
   }
 
   buildUserPrompt(task, history, lastResult) {
     let prompt = `TASK: ${task}\n`;
+
+    // Detect if this is an information request
+    const infoKeywords = ['check', 'what', 'is ', 'are ', 'tell me', 'show me', 'how much', 'how many', 'status', 'level', 'whether', 'weather'];
+    const isInfoTask = infoKeywords.some(kw => task.toLowerCase().includes(kw));
+
+    if (isInfoTask) {
+      prompt += `[INFO TASK - reason must include THE ANSWER. Use sensors/browser/apps to find it.]\n`;
+    }
 
     if (history.length > 0) {
       prompt += `\nHISTORY (${history.length} actions):\n`;
@@ -172,35 +216,89 @@ When done: {"complete":true, "reason":"..."}`;
         const params = h.params && Object.keys(h.params).length > 0 ? ` ${JSON.stringify(h.params)}` : '';
         prompt += `  ${i + 1}. [${status}] ${h.action}${params}\n`;
       });
-      prompt += '\n';
+
+      // LOOP DETECTION - check last 3 actions
+      const last3 = history.slice(-3).map(h => h.action);
+      if (last3.length === 3 && last3[0] === last3[1] && last3[1] === last3[2]) {
+        prompt += `\n⚠️ LOOP DETECTED: "${last3[0]}" repeated 3 times!\n`;
+        prompt += `→ You MUST try a DIFFERENT action or approach now.\n`;
+        prompt += `→ If trying to close apps manually failed, use close_all_apps command.\n`;
+        prompt += `→ If stuck, skip this step and proceed with the task.\n`;
+      }
+
+      // Suggest observation if last action wasn't an observation
+      const lastAction = history[history.length - 1]?.action;
+      const observeActions = ['get_device_snapshot', 'screen_analyze', 'get_all_sensors'];
+      if (lastAction && !observeActions.includes(lastAction)) {
+        prompt += `\n💡 TIP: Consider get_device_snapshot to see result of "${lastAction}".\n`;
+      }
     }
 
     if (lastResult) {
-      prompt += `LAST RESULT:\n${JSON.stringify(lastResult, null, 2)}\n`;
+      prompt += `\nLAST RESULT:\n${JSON.stringify(lastResult, null, 2)}\n`;
 
-      // Highlight key state info if it's a snapshot
+      // Extract key state from snapshot
       if (lastResult.action === 'get_device_snapshot' && lastResult.success) {
-        prompt += `\n📊 CURRENT STATE SUMMARY:\n`;
-        if (lastResult.flashlight_status) {
-          prompt += `   - Flashlight: ${lastResult.flashlight_status}\n`;
+        prompt += `\n📊 KEY STATE:\n`;
+        const snap = lastResult.snapshot || lastResult;
+        if (snap.flashlight_status) prompt += `   - Torch: ${snap.flashlight_status}\n`;
+        if (snap.foreground) prompt += `   - App: ${snap.foreground}\n`;
+        if (snap.battery_level !== undefined) prompt += `   - Battery: ${snap.battery_level}%\n`;
+        if (snap.wifi_enabled !== undefined) prompt += `   - WiFi: ${snap.wifi_enabled ? 'on' : 'off'}\n`;
+        if (snap.bluetooth_enabled !== undefined) prompt += `   - Bluetooth: ${snap.bluetooth_enabled ? 'on' : 'off'}\n`;
+        if (snap.gps_enabled !== undefined) prompt += `   - GPS: ${snap.gps_enabled ? 'on' : 'off'}\n`;
+        if (snap.screen_brightness !== undefined) prompt += `   - Brightness: ${snap.screen_brightness}\n`;
+        if (snap.location) prompt += `   - Location: ${JSON.stringify(snap.location)}\n`;
+
+        // Count UI nodes and find important ones
+        const nodes = snap.ui_nodes?.nodes || snap.ui_nodes || [];
+        const nodeCount = Array.isArray(nodes) ? nodes.length : 0;
+        prompt += `   - UI nodes: ${nodeCount} elements\n`;
+
+        // Look for useful buttons/elements
+        if (Array.isArray(nodes)) {
+          const clearAll = nodes.find(n =>
+              (n.text || n.desc || '').toLowerCase().includes('clear all')
+          );
+          if (clearAll && clearAll.bounds) {
+            prompt += `   - 🎯 "Clear all" button at (${clearAll.bounds.cx}, ${clearAll.bounds.cy})\n`;
+          }
         }
-        if (lastResult.foreground) {
-          prompt += `   - Foreground app: ${lastResult.foreground}\n`;
+
+        // Extract sensor data from snapshot if available
+        if (snap.all_sensors) {
+          prompt += `\n🌡️ SENSOR DATA:\n`;
+          for (const [id, sensor] of Object.entries(snap.all_sensors)) {
+            if (sensor.name && sensor.values) {
+              const val = Array.isArray(sensor.values) ? sensor.values[0] : sensor.values;
+              if (sensor.name.includes('TEMPERATURE')) prompt += `   - Temperature: ${val?.toFixed?.(1) || val}°C\n`;
+              if (sensor.name.includes('HUMIDITY')) prompt += `   - Humidity: ${val?.toFixed?.(1) || val}%\n`;
+              if (sensor.name.includes('PRESSURE')) prompt += `   - Pressure: ${val?.toFixed?.(1) || val} hPa\n`;
+              if (sensor.name.includes('LIGHT')) prompt += `   - Light: ${val?.toFixed?.(0) || val} lux ${val > 1000 ? '(bright)' : val < 100 ? '(dim)' : ''}\n`;
+            }
+          }
         }
-        if (lastResult.screen_brightness !== undefined) {
-          prompt += `   - Brightness: ${lastResult.screen_brightness}\n`;
+      }
+
+      // Extract sensor data from get_all_sensors
+      if (lastResult.action === 'get_all_sensors' && lastResult.success && lastResult.sensors) {
+        prompt += `\n🌡️ SENSOR DATA:\n`;
+        const sensors = lastResult.sensors;
+        for (const [id, sensor] of Object.entries(sensors)) {
+          if (sensor.name && sensor.values) {
+            const val = Array.isArray(sensor.values) ? sensor.values[0] : sensor.values;
+            if (sensor.name.includes('TEMPERATURE')) prompt += `   - Temperature: ${val?.toFixed?.(1) || val}°C\n`;
+            if (sensor.name.includes('HUMIDITY')) prompt += `   - Humidity: ${val?.toFixed?.(1) || val}%\n`;
+            if (sensor.name.includes('PRESSURE')) prompt += `   - Pressure: ${val?.toFixed?.(1) || val} hPa\n`;
+            if (sensor.name.includes('LIGHT')) prompt += `   - Light: ${val?.toFixed?.(0) || val} lux ${val > 1000 ? '(bright)' : val < 100 ? '(dim)' : ''}\n`;
+          }
         }
-        prompt += `\n⚠️ CHECK: Is the task goal ALREADY satisfied by current state? If YES → {"complete":true}\n`;
       }
     } else {
-      prompt += `(No observation yet - start with get_device_snapshot to check current state)\n`;
+      prompt += `\n(Start with get_device_snapshot)\n`;
     }
 
-    if (history.length > 0) {
-      prompt += `\n⚠️ CHECK HISTORY: Was the task already accomplished? If YES → {"complete":true}\n`;
-    }
-
-    prompt += `\nNext action? JSON only.`;
+    prompt += `\nNext action? Remember: observe after actions, avoid loops, use close_all_apps if manual close fails. Include "details" field explaining your reasoning`;
     return prompt;
   }
 }

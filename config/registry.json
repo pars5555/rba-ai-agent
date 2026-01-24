@@ -16,11 +16,22 @@
           "flashlight_status": { "type": "string", "description": "Flashlight state: 'on', 'off', or error message" },
           "is_statusbar_enabled": { "type": "boolean", "description": "Whether status bar is enabled" },
           "is_muted": { "type": "boolean", "description": "Whether device volume is muted" },
+          "all_sensors": { "type": "object", "description": "All sensor data (accelerometer, gyroscope, light, proximity, etc.)" },
           "ui_nodes": { "type": "object", "description": "{count, nodes:[{text,desc,class,bounds:{cx,cy},clickable,focused,editable}...]}" }
         }
       }
     },
     "notes": "Use bounds.cx, bounds.cy from nodes for tap coordinates."
+  },
+
+  "get_all_sensors": {
+    "endpoint": "/device/getAllSensors",
+    "description": "Get all sensor data from device (accelerometer, gyroscope, light, proximity, magnetic field, etc.)",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "sensors": { "type": "object", "description": "Object with sensor type keys and their latest values" }
+    }
   },
 
   "screen_analyze": {
@@ -126,6 +137,15 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether app was closed" }
+    }
+  },
+
+  "close_all_apps": {
+    "endpoint": "/device/closeAllApps",
+    "description": "Close all running apps (clears recent apps)",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true }
     }
   },
 

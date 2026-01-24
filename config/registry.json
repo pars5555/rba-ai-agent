@@ -1,24 +1,25 @@
 {
   "get_device_snapshot": {
     "endpoint": "/device/getDeviceSnapshot",
-    "description": "Get device state: device info (brand, model, screen size), foreground app, accessibility nodes (ui_nodes), installed apps. This is your PRIMARY observation tool. Use screen_width/screen_height as the ONLY valid coordinate bounds for input actions. NOTE: Does NOT include OCR/screen_analysis - use screen_analyze separately if you need text detection.",
-    "parameters": {},
-    "response": {
-      "success": { "type": "boolean", "required": true, "description": "Whether the snapshot was successful" },
-      "brand": { "type": "string", "description": "Device brand (e.g., TCL, Samsung)" },
-      "model": { "type": "string", "description": "Device model" },
-      "screen_width": { "type": "number", "required": true, "description": "Screen width in pixels - use for input coordinate bounds" },
-      "screen_height": { "type": "number", "required": true, "description": "Screen height in pixels - use for input coordinate bounds" },
-      "foreground_package": { "type": "string", "description": "Currently foreground app package" },
-      "battery_level": { "type": "number", "description": "Battery level 0-100" },
-      "is_wifi_enabled": { "type": "boolean", "description": "Whether WiFi is enabled" },
-      "is_wifi_connected": { "type": "boolean", "description": "Whether WiFi is connected" },
-      "installed_apps": { "type": "object", "description": "Map of package -> version" },
-      "ui_nodes": { "type": "object", "description": "Accessibility nodes with count and nodes array" },
-      "is_statusbar_enabled": { "type": "boolean", "description": "Whether status bar is disabled (locked)" }
+    "description": "Get device state with UI nodes. Returns snapshot with screen_width, screen_height, foreground_package, ui_nodes. Compact mode: each node has {text, desc, hint, class, bounds:{cx,cy,...}, clickable, focused, editable, scrollable...} - only non-empty/true values.",
+    "parameters": {
+      "compact": { "type": "boolean", "default": true, "description": "Use compact node format (default true)" }
     },
-    "safe": true,
-    "notes": "Primary observation. Fast and lightweight. Use screen_analyze only if you need OCR text detection."
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "snapshot": {
+        "type": "object",
+        "properties": {
+          "screen_width": { "type": "number" },
+          "screen_height": { "type": "number" },
+          "foreground_package": { "type": "string" },
+          "flashlight_status": { "type": "string", "description": "Flashlight state: 'on', 'off', or error message" },
+          "is_statusbar_enabled": { "type": "boolean", "description": "Whether status bar is enabled" },
+          "ui_nodes": { "type": "object", "description": "{count, nodes:[{text,desc,class,bounds:{cx,cy},clickable,focused,editable}...]}" }
+        }
+      }
+    },
+    "notes": "Use bounds.cx, bounds.cy from nodes for tap coordinates."
   },
 
   "screen_analyze": {
@@ -44,7 +45,6 @@
         }
       }
     },
-    "safe": true,
     "notes": "Use when you need to find text on screen that is not in accessibility nodes. Each textElement has: text, bounds, center, confidence."
   },
 
@@ -55,8 +55,7 @@
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether navigation succeeded" },
       "action": { "type": "string", "description": "Action name echoed back" }
-    },
-    "safe": true
+    }
   },
 
   "press_back": {
@@ -65,8 +64,7 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether back press succeeded" }
-    },
-    "safe": true
+    }
   },
 
   "press_home": {
@@ -75,8 +73,7 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether home press succeeded" }
-    },
-    "safe": true
+    }
   },
 
   "press_recent": {
@@ -85,8 +82,7 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether recent apps opened" }
-    },
-    "safe": true
+    }
   },
 
   "press_enter": {
@@ -95,8 +91,7 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether enter was pressed" }
-    },
-    "safe": true
+    }
   },
 
   "run_app": {
@@ -119,8 +114,7 @@
           "waitTimeMs": { "type": "number", "description": "Actual time waited" }
         }
       }
-    },
-    "safe": true
+    }
   },
 
   "close_app": {
@@ -131,8 +125,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether app was closed" }
-    },
-    "safe": true
+    }
   },
 
   "force_stop_app": {
@@ -143,8 +136,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether app was force stopped" }
-    },
-    "safe": true
+    }
   },
 
   "input_tap": {
@@ -158,8 +150,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether tap was performed" }
-    },
-    "safe": true
+    }
   },
 
   "input_swipe": {
@@ -174,8 +165,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether swipe was performed" }
-    },
-    "safe": true
+    }
   },
 
   "input_scroll": {
@@ -184,12 +174,11 @@
     "parameters": {
       "x": { "type": "number", "required": true, "description": "Scroll center X coordinate in pixels. MUST be within [0, screen_width)." },
       "y": { "type": "number", "required": true, "description": "Scroll center Y coordinate in pixels. MUST be within [0, screen_height)." },
-      "ticks": { "type": "number", "default": 120, "description": "Scroll amount. Positive=scroll up, Negative=scroll down. 120 = 1 page." }
+      "ticks": { "type": "number", "default": 120, "description": "Scroll amount in pixels. Use 300-500 for normal scroll. Positive=up, Negative=down. Example: -400 to scroll down one screen." }
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether scroll was performed" }
-    },
-    "safe": true
+    }
   },
 
   "type_text": {
@@ -202,8 +191,7 @@
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether text was typed" },
       "typed_length": { "type": "number", "description": "Number of characters typed" }
-    },
-    "safe": true
+    }
   },
 
   "clear_text": {
@@ -212,8 +200,7 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether text was cleared" }
-    },
-    "safe": true
+    }
   },
 
   "wait": {
@@ -226,7 +213,6 @@
       "success": { "type": "boolean", "required": true },
       "waited_ms": { "type": "number", "description": "Actual ms waited" }
     },
-    "safe": true,
     "local": true
   },
 
@@ -238,8 +224,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether vibration started" }
-    },
-    "safe": true
+    }
   },
 
   "toast": {
@@ -251,8 +236,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether toast was shown" }
-    },
-    "safe": true
+    }
   },
 
   "get_screenshot": {
@@ -266,8 +250,7 @@
       "data": { "type": "string", "description": "Base64 encoded JPEG image" },
       "width": { "type": "number", "description": "Image width" },
       "height": { "type": "number", "description": "Image height" }
-    },
-    "safe": true
+    }
   },
 
   "set_screen_brightness": {
@@ -279,8 +262,7 @@
     "response": {
       "success": { "type": "boolean", "required": true },
       "brightness": { "type": "number", "description": "New brightness value" }
-    },
-    "safe": true
+    }
   },
 
   "get_screen_brightness": {
@@ -290,8 +272,7 @@
     "response": {
       "success": { "type": "boolean", "required": true },
       "brightness": { "type": "number", "required": true, "description": "Current brightness 0-255" }
-    },
-    "safe": true
+    }
   },
 
   "set_dark_mode": {
@@ -303,8 +284,7 @@
     "response": {
       "success": { "type": "boolean", "required": true },
       "dark_mode": { "type": "boolean", "description": "New dark mode state" }
-    },
-    "safe": true
+    }
   },
 
   "get_dark_mode": {
@@ -314,8 +294,7 @@
     "response": {
       "success": { "type": "boolean", "required": true },
       "dark_mode": { "type": "boolean", "required": true, "description": "true if dark mode is enabled" }
-    },
-    "safe": true
+    }
   },
 
   "volume_mute": {
@@ -327,8 +306,7 @@
     "response": {
       "success": { "type": "boolean", "required": true },
       "muted": { "type": "boolean", "description": "Current mute state" }
-    },
-    "safe": true
+    }
   },
 
   "disable_status_bar": {
@@ -337,8 +315,7 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true }
-    },
-    "safe": true
+    }
   },
 
   "enable_status_bar": {
@@ -347,8 +324,25 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true }
-    },
-    "safe": true
+    }
+  },
+
+  "enable_flashlight": {
+    "endpoint": "/device/enableFlashlight",
+    "description": "Turn on the device flashlight/torch",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    }
+  },
+
+  "disable_flashlight": {
+    "endpoint": "/device/disableFlashlight",
+    "description": "Turn off the device flashlight/torch",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    }
   },
 
   "clear_app_cache": {
@@ -359,8 +353,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true }
-    },
-    "safe": true
+    }
   },
 
   "draw_rect": {
@@ -377,8 +370,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true }
-    },
-    "safe": true
+    }
   },
 
   "draw_circle": {
@@ -394,8 +386,7 @@
     },
     "response": {
       "success": { "type": "boolean", "required": true }
-    },
-    "safe": true
+    }
   },
 
   "clear_overlays": {
@@ -404,7 +395,46 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true }
+    }
+  },
+  "speak": {
+    "endpoint": "/device/speak",
+    "description": "Text-to-speech - speak text aloud on device. Stops any ongoing speech first.",
+    "parameters": {
+      "text": {
+        "type": "string",
+        "required": true,
+        "description": "Text to speak"
+      },
+      "language": {
+        "type": "string",
+        "default": "en",
+        "description": "Language code (en, ru, etc.)"
+      },
+      "pitch": {
+        "type": "number",
+        "default": 1,
+        "description": "Voice pitch (0.5-2.0)"
+      },
+      "speed": {
+        "type": "number",
+        "default": 1,
+        "description": "Speech rate (0.5-2.0)"
+      }
     },
-    "safe": true
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "message": { "type": "string", "description": "Status message" }
+    }
+  },
+
+  "stop_speech": {
+    "endpoint": "/device/stopSpeech",
+    "description": "Stop any ongoing text-to-speech",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "message": { "type": "string", "description": "Status message" }
+    }
   }
 }

@@ -15,8 +15,9 @@
     }
   },
   "agent": {
-    "maxSteps": 25,
-    "pauseBetweenSteps": 300
+    "maxSteps": 100,
+    "maxDurationSeconds": 300,
+    "pauseBetweenSteps": 100
   },
   "server": {
     "port": 3000

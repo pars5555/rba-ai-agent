@@ -4,16 +4,9 @@ import { config } from './config.js';
 import { randomUUID } from 'crypto';
 
 /**
- * Simple Reactive Agent
+ * Pure Bridge Agent with TTS feedback
  *
- * Just a bridge:
- * 1. Observe screen (get raw API response)
- * 2. Send to AI (AI analyzes everything)
- * 3. Execute AI's command
- * 4. Report/log
- * 5. Repeat
- *
- * NO task-related logic. AI decides everything.
+ * Loop: Ask AI -> Speak description -> Execute command -> Repeat
  */
 class Agent {
   constructor(deviceSerial) {
@@ -22,156 +15,129 @@ class Agent {
     this.llm = new LLMClient();
   }
 
-  /**
-   * Run a task
-   */
   async run(task, options = {}) {
-    const maxSteps = options.maxSteps || config.agent?.maxSteps || 25;
-    const pauseMs = config.agent?.pauseBetweenSteps || 300;
+    const maxSteps = options.maxSteps || config.agent?.maxSteps || 100;
+    const maxDurationSeconds = options.maxDurationSeconds || config.agent?.maxDurationSeconds || 300;
+    const maxDurationMs = maxDurationSeconds * 1000;
     const taskId = options.taskId || randomUUID();
+    const startTime = Date.now();
+
+    // TTS options
+    const speak = options.speak !== false; // enabled by default
+    const speakLang = options.speakLang || 'en';
+
+    console.log(`\n${'═'.repeat(60)}`);
+    console.log(`🤖 AGENT: "${task}"`);
+    console.log(`   Device: ${this.sn} | Max: ${maxSteps} steps, ${maxDurationMs/1000}s`);
+    console.log(`   TTS: ${speak ? 'ON' : 'OFF'}${speak ? ` (${speakLang})` : ''}`);
+    console.log(`${'═'.repeat(60)}`);
+
+    await this.report({ uuid: this.sn, task_id: taskId, type: 'start', task });
+
+    // Announce task start
+    if (speak) {
+      await this.speak(`Starting task: ${task}`);
+    }
 
     const history = [];
+    let lastResult = null;
     let step = 0;
     let completed = false;
     let fatalError = null;
+    let timedOut = false;
 
-    console.log(`\n${'═'.repeat(60)}`);
-    console.log(`🤖 AGENT START`);
-    console.log(`   Task: "${task}"`);
-    console.log(`   Device: ${this.sn}`);
-    console.log(`   Task ID: ${taskId}`);
-    console.log(`   Max steps: ${maxSteps}`);
-    console.log(`${'═'.repeat(60)}\n`);
-
-    // Report task start
-    await this.report({
-      uuid: this.sn,
-      task_id: taskId,
-      type: 'start',
-      task,
-      payload: { maxSteps, device: this.sn }
-    });
-
-    while (step < maxSteps && !completed && !fatalError) {
-      step++;
-      console.log(`\n${'─'.repeat(50)}`);
-      console.log(`📍 STEP ${step}/${maxSteps}`);
-
-      // 1. OBSERVE - Get raw API response
-      const state = await this.rba.call(this.sn, 'get_device_snapshot', {});
-
-      // Only stop on fatal transport errors (device disconnected, auth failed)
-      if (state._fatal) {
-        fatalError = state._fatal;
-        console.log(`❌ Fatal: ${fatalError.message}`);
+    while (step < maxSteps && !completed && !fatalError && !timedOut) {
+      // Check timeout
+      if (Date.now() - startTime > maxDurationMs) {
+        timedOut = true;
+        console.log(`   ⏱️ Timeout: ${maxDurationMs/1000}s exceeded`);
+        if (speak) await this.speak('Task timed out');
         break;
       }
+      step++;
+      console.log(`\n── Step ${step} ──`);
 
-      console.log(`   📱 App: ${state.snapshot?.foreground_package || 'unknown'}`);
-
-      // 2. DECIDE - AI analyzes raw state and decides next action
+      // Ask AI what to do
       let action;
       try {
-        action = await this.llm.getNextAction(state, task, history);
-        console.log(`   🤖 AI: ${action.action} - ${action.description || ''}`);
-        if (action.reason) {
-          console.log(`   💭 Reason: ${action.reason}`);
-        }
+        action = await this.llm.getNextAction(task, history, lastResult);
+        console.log(`   AI: ${action.action || 'complete'} ${action.reason ? '- ' + action.reason : ''}`);
       } catch (error) {
-        console.error(`   ❌ LLM Error: ${error.message}`);
+        console.error(`   ❌ LLM: ${error.message}`);
         fatalError = { type: 'llm_error', message: error.message };
+        if (speak) await this.speak('AI error occurred');
         break;
       }
 
-      // 3. CHECK COMPLETION (before executing)
-      if (action.complete === true) {
-        console.log(`\n✅ TASK COMPLETE: ${action.reason || 'AI marked as complete'}`);
+      // Check completion
+      if (action.complete) {
         completed = true;
-        history.push({ step, action, result: { success: true }, state: this.summarize(state) });
+        if (speak && action.reason) {
+          await this.speak(action.reason);
+        }
         break;
       }
 
-      // 4. EXECUTE - Run AI's command
-      const result = await this.rba.call(this.sn, action.action, action.params || {});
+      // Speak the description/reason before executing
+      if (speak && action.reason) {
+        await this.speak(action.reason);
+      }
 
-      // Only stop on fatal transport errors
+      // Execute command
+      const result = await this.rba.call(this.sn, action.action, action.params || {});
+      lastResult = { action: action.action, params: action.params, ...result };
+
       if (result._fatal) {
         fatalError = result._fatal;
         console.log(`   ❌ Fatal: ${fatalError.message}`);
+        if (speak) await this.speak('Fatal error: ' + fatalError.message);
         break;
       }
 
-      // Log result
-      const icon = result.success ? '✅' : '❌';
-      console.log(`   ${icon} Result: ${result.success ? 'OK' : result.error || 'Failed'}`);
+      console.log(`   ${result.success ? '✓' : '✗'} ${result.success ? 'OK' : result.error || 'Failed'}`);
 
-      // 5. RECORD
-      history.push({
-        step,
-        action,
-        result: { success: result.success, error: result.error },
-        state: this.summarize(state)
-      });
-
-      // 6. REPORT
-      await this.report({
-        uuid: this.sn,
-        task_id: taskId,
-        type: 'process',
-        task,
-        step,
-        payload: { action, result: { success: result.success, error: result.error } }
-      });
-
-      // Pause between steps
-      if (pauseMs > 0) {
-        await this.sleep(pauseMs);
+      // Speak failure if action failed
+      if (!result.success && speak) {
+        await this.speak(`Failed: ${result.error || 'unknown error'}`);
       }
+
+      history.push({ action: action.action, params: action.params, success: result.success });
+      await this.report({ uuid: this.sn, task_id: taskId, type: 'process', step, payload: { action, success: result.success } });
     }
 
-    // Build final result
-    const success = completed && !fatalError;
-    const reason = fatalError ? 'fatal_error' :
-                   completed ? 'completed' :
-                   step >= maxSteps ? 'max_steps' : 'unknown';
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    const success = completed && !fatalError && !timedOut;
+    const reason = fatalError ? 'fatal_error' : timedOut ? 'timeout' : completed ? 'completed' : 'max_steps';
 
     console.log(`\n${'═'.repeat(60)}`);
-    console.log(`🏁 AGENT ${success ? 'SUCCESS' : 'STOPPED'}`);
-    console.log(`   Steps: ${step}`);
-    console.log(`   Reason: ${reason}`);
+    console.log(`🏁 ${success ? 'SUCCESS' : 'STOPPED'} (${step} steps, ${elapsed}s) - ${reason}`);
     console.log(`${'═'.repeat(60)}\n`);
 
-    const finalResult = { success, task, taskId, device: this.sn, steps: step, reason, history, fatalError };
+    // Announce completion
+    if (speak) {
+      const msg = success ? 'Task completed successfully' : `Task stopped: ${reason}`;
+      await this.speak(msg);
+    }
 
-    // Report done
-    await this.report({
-      uuid: this.sn,
-      task_id: taskId,
-      type: 'done',
-      task,
-      payload: finalResult
-    });
+    await this.report({ uuid: this.sn, task_id: taskId, type: 'done', payload: { success, steps: step, elapsed, reason } });
+    return { success, task, taskId, steps: step, elapsed, reason, history, fatalError };
+  }
 
-    return finalResult;
+  /**
+   * Speak text on device via TTS
+   */
+  async speak(text) {
+    try {
+      console.log(`   🔊 "${text}"`);
+      await this.rba.call(this.sn, 'speak', { text });
+    } catch (e) {
+      // Silent fail - don't break main flow
+      console.log(`   🔇 TTS failed: ${e.message}`);
+    }
   }
 
   async report(event) {
-    try {
-      await this.rba.reportEvent(event);
-    } catch (e) {
-      console.warn(`⚠️ Report failed: ${e.message}`);
-    }
-  }
-
-  summarize(state) {
-    return {
-      app: state.snapshot?.foreground_package,
-      success: state.success
-    };
-  }
-
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    try { await this.rba.reportEvent(event); } catch (e) { }
   }
 }
 

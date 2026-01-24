@@ -195,7 +195,7 @@
     "parameters": {
       "x": { "type": "number", "required": true, "description": "Scroll center X coordinate in pixels. MUST be within [0, screen_width)." },
       "y": { "type": "number", "required": true, "description": "Scroll center Y coordinate in pixels. MUST be within [0, screen_height)." },
-      "ticks": { "type": "number", "default": 120, "description": "Scroll amount in pixels. Use 300-500 for normal scroll. Positive=up, Negative=down. Example: -400 to scroll down one screen." }
+      "ticks": { "type": "number", "default": 400, "minimum": 50, "maximum": 1000, "description": "Scroll amount in PIXELS (not steps!). Use 300-500 for normal scroll. Positive=up, Negative=down. Example: -400 to scroll down. NEVER use small values like -3!" }
     },
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether scroll was performed" }
@@ -204,7 +204,7 @@
 
   "type_text": {
     "endpoint": "/device/typeText",
-    "description": "Type text into the CURRENTLY FOCUSED input field. IMPORTANT: You MUST tap on an input field first to focus it before using this command!",
+    "description": "Type text into the CURRENTLY FOCUSED input field. IMPORTANT: You MUST tap on an input field first to focus it before using this command! IMPORTANT: always use enable_adb_keyboard before typing to ensure the virtual keyboard is hidden and will not interfere.",
     "parameters": {
       "text": { "type": "string", "required": true, "description": "Text to type (supports Unicode)" },
       "delay_ms": { "type": "number", "default": 50, "description": "Delay between characters in ms" }
@@ -221,6 +221,39 @@
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether text was cleared" }
+    }
+  },
+
+  "enable_adb_keyboard": {
+    "endpoint": "/device/enableAdbKeyboard",
+    "description": "Enable ADB keyboard for text input. Use this if type_text doesn't work properly.",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "message": { "type": "string", "description": "Error message if failed" }
+    }
+  },
+
+  "disable_adb_keyboard": {
+    "endpoint": "/device/disableAdbKeyboard",
+    "description": "Disable ADB keyboard and restore default keyboard",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "message": { "type": "string", "description": "Error message if failed" }
+    }
+  },
+
+  "get_adb_keyboard_status": {
+    "endpoint": "/device/getAdbKeyboardStatus",
+    "description": "Get ADB keyboard installation and status info",
+    "parameters": {},
+    "response": {
+      "package_name": { "type": "string", "description": "ADB keyboard package name" },
+      "installed": { "type": "boolean", "description": "Whether ADB keyboard is installed" },
+      "enabled": { "type": "boolean", "description": "Whether ADB keyboard is currently enabled" },
+      "default_input_method": { "type": "string", "description": "Current default input method" },
+      "permitted_input_methods": { "type": "string", "description": "Comma-separated list of permitted input methods" }
     }
   },
 

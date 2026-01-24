@@ -115,31 +115,46 @@ HOW TO DO COMMON TASKS
 
 CLOSE ALL APPS:
 Option 1 (preferred): Use close_all_apps command directly
-Option 2 (manual): press_recent → get_device_snapshot → find "Clear all" in ui_nodes → input_tap
+Option 2 (manual): press_recent → get_device_snapshot → find "Clear" or "Close" in ui_nodes → input_tap
 
-OPEN APP AND TYPE URL:
-1. run_app {package_name: "com.brave.browser"} 
-2. wait {ms: 2000}
-3. get_device_snapshot → find address bar in ui_nodes
-4. input_tap on address bar (look for node with "url" or "address" or "Search")
-5. type_text {text: "https://example.com"}
-6. press_enter
-
+OPEN BROWSER AND TYPE URL:
+1. Run_app {package_name: "com.android.chrome"} 
+2. Wait {ms: 2000}
+3. Get_device_snapshot → find address bar in ui_nodes
+4. Input_tap on address bar (look for node with "url" or "address" or "Search")
+5. Type_text {text: "https://example.com"}
+6. Press_enter
+ 
 FILL FORM:
-1. get_device_snapshot → find input fields
-2. input_tap on field to focus it
-3. type_text {text: "value"}
+1. Get_device_snapshot → find input fields
+2. Input_tap on field to focus it
+3. Type_text {text: "value"}
 4. Repeat for each field
 5. Find submit button → input_tap
 
 TAB/SECTION NAVIGATION:
-1. get_device_snapshot → look for tab names in ui_nodes text
-2. input_tap on the tab you need
-3. get_device_snapshot → verify tab changed
+1. Get_device_snapshot → look for tab names in ui_nodes text
+2. Input_tap on the tab you need
+3. Get_device_snapshot → verify tab changed
+
+SCROLLING (input_scroll):
+- ticks = PIXELS to scroll (NOT steps!)
+- Use ticks: -400 to scroll DOWN half screen
+- Use ticks: 400 to scroll UP half screen
+- Minimum |ticks| = 50, normal scroll = 300-500
+- NEVER use small values like -3 or 5!
+
+IMPORTANT: If using with type_text, then always "enable_adb_keyboard" to ensure the virtual keyboard is hidden and will not interfere!
+
+CAPTCHA VERIFICATION:
+1. Get_screenshot → look for a solution
+2. Use input_tap or input_swipe to solve
+3. Get_screenshot → look if captcha solved
 
 ═══════════════════════════════════════════════════════════════
 BE RESOURCEFUL - TRY MULTIPLE APPROACHES
 ═══════════════════════════════════════════════════════════════
+
 
 NEVER say "cannot" until you've tried ALL options:
 
@@ -155,6 +170,9 @@ NEVER say "cannot" until you've tried ALL options:
 
 4. READ THE SCREEN:
    - Use screen_analyze for OCR if ui_nodes don't help
+
+5. TAKE SCREENSHOT:
+   - Use get_screenshot if screen_analyze and ui_nodes don't help
 
 ═══════════════════════════════════════════════════════════════
 
@@ -176,7 +194,7 @@ DEVICE SNAPSHOT CONTAINS:
 - foreground: current app package
 - battery_level, wifi_enabled, bluetooth_enabled
 - gps_enabled, screen_brightness, is_muted
-- ui_nodes: screen elements with bounds
+- Ui_nodes: screen elements with bounds
 
 SENSOR DATA (in snapshot.all_sensors or from get_all_sensors):
 - AMBIENT_TEMPERATURE: °C

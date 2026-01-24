@@ -1,7 +1,7 @@
 {
   "get_device_snapshot": {
     "endpoint": "/device/getDeviceSnapshot",
-    "description": "Get complete device state in one call. Returns: device info (brand, model, screen size), foreground app, screen analysis (OCR text + UI elements), accessibility nodes, installed apps. This is your PRIMARY observation tool. Use screen_width/screen_height as the ONLY valid coordinate bounds for input actions.",
+    "description": "Get device state: device info (brand, model, screen size), foreground app, accessibility nodes (ui_nodes), installed apps. This is your PRIMARY observation tool. Use screen_width/screen_height as the ONLY valid coordinate bounds for input actions. NOTE: Does NOT include OCR/screen_analysis - use screen_analyze separately if you need text detection.",
     "parameters": {},
     "response": {
       "success": { "type": "boolean", "required": true, "description": "Whether the snapshot was successful" },
@@ -14,12 +14,38 @@
       "is_wifi_enabled": { "type": "boolean", "description": "Whether WiFi is enabled" },
       "is_wifi_connected": { "type": "boolean", "description": "Whether WiFi is connected" },
       "installed_apps": { "type": "object", "description": "Map of package -> version" },
-      "screen_analysis": { "type": "object", "description": "OCR text elements and UI detection results" },
       "ui_nodes": { "type": "object", "description": "Accessibility nodes with count and nodes array" },
       "is_statusbar_enabled": { "type": "boolean", "description": "Whether status bar is disabled (locked)" }
     },
     "safe": true,
-    "notes": "This is the primary observation command. Call it before each action to get current screen state. Response fields are at root level (not nested in 'snapshot')."
+    "notes": "Primary observation. Fast and lightweight. Use screen_analyze only if you need OCR text detection."
+  },
+
+  "screen_analyze": {
+    "endpoint": "/device/opencvAnalyzeScreen",
+    "description": "Analyze screen using OpenCV: OCR text detection and UI element detection. Use this when get_device_snapshot ui_nodes are not enough and you need to find text or UI elements by visual analysis. This is slower than get_device_snapshot.",
+    "parameters": {
+      "detectText": { "type": "boolean", "default": true, "description": "Enable OCR text detection" },
+      "detectContours": { "type": "boolean", "default": true, "description": "Enable UI element contour detection" },
+      "classifyElements": { "type": "boolean", "default": true, "description": "Classify detected elements (button, input, etc.)" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "analysis": {
+        "type": "object",
+        "description": "Screen analysis results",
+        "properties": {
+          "screenWidth": { "type": "number", "description": "Screen width" },
+          "screenHeight": { "type": "number", "description": "Screen height" },
+          "textCount": { "type": "number", "description": "Number of text elements found" },
+          "uiCount": { "type": "number", "description": "Number of UI elements found" },
+          "textElements": { "type": "array", "description": "Array of detected text with bounds and center coordinates" },
+          "uiElements": { "type": "array", "description": "Array of detected UI elements with bounds and center coordinates" }
+        }
+      }
+    },
+    "safe": true,
+    "notes": "Use when you need to find text on screen that is not in accessibility nodes. Each textElement has: text, bounds, center, confidence."
   },
 
   "go_home": {

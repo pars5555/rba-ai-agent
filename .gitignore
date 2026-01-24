@@ -1,0 +1,14 @@
+node_modules/
+config/local_config.json
+.DS_Store
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.cursor/
+
+# Data
+data/

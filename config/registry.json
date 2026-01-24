@@ -1,0 +1,387 @@
+{
+  "get_device_snapshot": {
+    "endpoint": "/device/getDeviceSnapshot",
+    "description": "Get complete device state: foreground app, screen analysis (OCR text + UI elements), accessibility nodes, installed apps. This is your primary observation tool.",
+    "parameters": {
+      "include_screen_analysis": { "type": "boolean", "default": true, "description": "Include OCR and UI detection" },
+      "include_ui_nodes": { "type": "boolean", "default": true, "description": "Include accessibility tree" },
+      "ui_nodes_limit": { "type": "number", "default": 500, "description": "Max accessibility nodes to return" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether the snapshot was successful" },
+      "snapshot": { 
+        "type": "object", 
+        "required": true,
+        "description": "Device snapshot data",
+        "properties": {
+          "foreground_package": { "type": "string", "description": "Currently foreground app package" },
+          "screen_width": { "type": "number", "description": "Screen width in pixels" },
+          "screen_height": { "type": "number", "description": "Screen height in pixels" },
+          "installed_apps": { "type": "object", "description": "Map of package -> version" },
+          "screen_analysis": { "type": "object", "description": "OCR and UI analysis" },
+          "ui_nodes": { "type": "object", "description": "Accessibility nodes" }
+        }
+      }
+    },
+    "safe": true
+  },
+
+  "go_home": {
+    "endpoint": "/device/goHome",
+    "description": "Navigate to Android home screen using global action",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether navigation succeeded" },
+      "action": { "type": "string", "description": "Action name echoed back" }
+    },
+    "safe": true
+  },
+
+  "press_back": {
+    "endpoint": "/device/pressBack",
+    "description": "Press the back button using global action",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether back press succeeded" }
+    },
+    "safe": true
+  },
+
+  "press_home": {
+    "endpoint": "/device/pressHome",
+    "description": "Press the home button using global action",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether home press succeeded" }
+    },
+    "safe": true
+  },
+
+  "press_recent": {
+    "endpoint": "/device/pressRecent",
+    "description": "Open recent apps / app switcher using global action",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether recent apps opened" }
+    },
+    "safe": true
+  },
+
+  "press_enter": {
+    "endpoint": "/device/pressEnter",
+    "description": "Press enter/submit key. Use after typing in search fields to submit the query.",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether enter was pressed" }
+    },
+    "safe": true
+  },
+
+  "run_app": {
+    "endpoint": "/device/runApp",
+    "description": "Launch an app by package name. Use wait_for_open_ms to wait until app reaches foreground.",
+    "parameters": {
+      "package_name": { "type": "string", "required": true, "description": "Android package name (e.g., com.android.chrome)" },
+      "wait_for_open_ms": { "type": "number", "default": 3000, "description": "Time to wait for app to reach foreground (recommended: 3000)" },
+      "activity": { "type": "string", "description": "Specific activity to launch (optional)" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether app launched successfully" },
+      "data": {
+        "type": "object",
+        "description": "Launch result details",
+        "properties": {
+          "package": { "type": "string", "description": "Package that was launched" },
+          "activity": { "type": "string", "description": "Activity that was launched" },
+          "appInForeground": { "type": "boolean", "description": "Whether app is now in foreground" },
+          "waitTimeMs": { "type": "number", "description": "Actual time waited" }
+        }
+      }
+    },
+    "safe": true
+  },
+
+  "close_app": {
+    "endpoint": "/device/closeApp",
+    "description": "Close an app gracefully by sending it to background",
+    "parameters": {
+      "package_name": { "type": "string", "required": true, "description": "Package name to close" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether app was closed" }
+    },
+    "safe": true
+  },
+
+  "force_stop_app": {
+    "endpoint": "/device/forceStopApp",
+    "description": "Force stop an app immediately (kills all its processes)",
+    "parameters": {
+      "package": { "type": "string", "required": true, "description": "Package name to force stop" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether app was force stopped" }
+    },
+    "safe": true
+  },
+
+  "input_tap": {
+    "endpoint": "/device/performTap",
+    "description": "Tap at specific screen coordinates. Use EXACT coordinates from get_device_snapshot observation.",
+    "parameters": {
+      "x": { "type": "number", "required": true, "description": "X coordinate (horizontal position)" },
+      "y": { "type": "number", "required": true, "description": "Y coordinate (vertical position)" },
+      "duration_ms": { "type": "number", "default": 100, "description": "Tap duration in ms. Use 500+ for long-press." }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether tap was performed" }
+    },
+    "safe": true
+  },
+
+  "input_swipe": {
+    "endpoint": "/device/performSwipe",
+    "description": "Swipe from point A to point B. For SCROLL DOWN (see content below): start high (y1=1500), end low (y2=500). For SCROLL UP: start low, end high.",
+    "parameters": {
+      "x1": { "type": "number", "required": true, "description": "Start X coordinate" },
+      "y1": { "type": "number", "required": true, "description": "Start Y coordinate" },
+      "x2": { "type": "number", "required": true, "description": "End X coordinate" },
+      "y2": { "type": "number", "required": true, "description": "End Y coordinate" },
+      "duration_ms": { "type": "number", "default": 300, "description": "Swipe duration (longer = slower swipe)" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether swipe was performed" }
+    },
+    "safe": true
+  },
+
+  "input_scroll": {
+    "endpoint": "/device/performScroll",
+    "description": "Scroll at a specific location using scroll events (like mouse wheel)",
+    "parameters": {
+      "x": { "type": "number", "required": true, "description": "Scroll center X coordinate" },
+      "y": { "type": "number", "required": true, "description": "Scroll center Y coordinate" },
+      "ticks": { "type": "number", "default": 120, "description": "Scroll amount. Positive=scroll up, Negative=scroll down. 120 = 1 page." }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether scroll was performed" }
+    },
+    "safe": true
+  },
+
+  "type_text": {
+    "endpoint": "/device/typeText",
+    "description": "Type text into the CURRENTLY FOCUSED input field. IMPORTANT: You MUST tap on an input field first to focus it before using this command!",
+    "parameters": {
+      "text": { "type": "string", "required": true, "description": "Text to type (supports Unicode)" },
+      "delay_ms": { "type": "number", "default": 50, "description": "Delay between characters in ms" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether text was typed" },
+      "typed_length": { "type": "number", "description": "Number of characters typed" }
+    },
+    "safe": true
+  },
+
+  "clear_text": {
+    "endpoint": "/device/clearText",
+    "description": "Clear text from the currently focused input field",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether text was cleared" }
+    },
+    "safe": true
+  },
+
+  "wait": {
+    "endpoint": null,
+    "description": "Wait for UI to update. Handled locally (not sent to device). Use after actions that change the screen.",
+    "parameters": {
+      "ms": { "type": "number", "default": 1000, "description": "Milliseconds to wait" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "waited_ms": { "type": "number", "description": "Actual ms waited" }
+    },
+    "safe": true,
+    "local": true
+  },
+
+  "vibrate_device": {
+    "endpoint": "/device/vibrateDevice",
+    "description": "Vibrate the device for feedback or notification",
+    "parameters": {
+      "duration_milliseconds": { "type": "number", "default": 500, "description": "Vibration duration in ms" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether vibration started" }
+    },
+    "safe": true
+  },
+
+  "toast": {
+    "endpoint": "/device/toast",
+    "description": "Show a toast message on the device screen",
+    "parameters": {
+      "message": { "type": "string", "required": true, "description": "Message to display" },
+      "duration": { "type": "string", "default": "short", "description": "Duration: 'short' or 'long'" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true, "description": "Whether toast was shown" }
+    },
+    "safe": true
+  },
+
+  "get_screenshot": {
+    "endpoint": "/device/hidden/getScreenshot",
+    "description": "Get a screenshot as base64 JPEG. Usually not needed - use get_device_snapshot instead for structured data.",
+    "parameters": {
+      "quality": { "type": "number", "default": 80, "description": "JPEG quality 1-100 (higher = better quality, larger size)" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "data": { "type": "string", "description": "Base64 encoded JPEG image" },
+      "width": { "type": "number", "description": "Image width" },
+      "height": { "type": "number", "description": "Image height" }
+    },
+    "safe": true
+  },
+
+  "set_screen_brightness": {
+    "endpoint": "/device/setScreenBrightness",
+    "description": "Set the device screen brightness level",
+    "parameters": {
+      "brightness": { "type": "number", "required": true, "description": "Brightness level 0-255 (0=dark, 255=max)" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "brightness": { "type": "number", "description": "New brightness value" }
+    },
+    "safe": true
+  },
+
+  "get_screen_brightness": {
+    "endpoint": "/device/getScreenBrightness",
+    "description": "Get the current screen brightness level",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "brightness": { "type": "number", "required": true, "description": "Current brightness 0-255" }
+    },
+    "safe": true
+  },
+
+  "set_dark_mode": {
+    "endpoint": "/device/setDarkMode",
+    "description": "Enable or disable system dark mode",
+    "parameters": {
+      "enabled": { "type": "boolean", "required": true, "description": "true = dark mode on, false = light mode" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "dark_mode": { "type": "boolean", "description": "New dark mode state" }
+    },
+    "safe": true
+  },
+
+  "get_dark_mode": {
+    "endpoint": "/device/getDarkMode",
+    "description": "Get current dark mode state",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "dark_mode": { "type": "boolean", "required": true, "description": "true if dark mode is enabled" }
+    },
+    "safe": true
+  },
+
+  "volume_mute": {
+    "endpoint": "/device/mute",
+    "description": "Mute or unmute device media volume",
+    "parameters": {
+      "mute": { "type": "boolean", "default": true, "description": "true to mute, false to unmute" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true },
+      "muted": { "type": "boolean", "description": "Current mute state" }
+    },
+    "safe": true
+  },
+
+  "disable_status_bar": {
+    "endpoint": "/device/disableStatusBar",
+    "description": "Lock/disable status bar to prevent accidental pull-down during automation",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    },
+    "safe": true
+  },
+
+  "enable_status_bar": {
+    "endpoint": "/device/enableStatusBar",
+    "description": "Re-enable status bar after disabling it",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    },
+    "safe": true
+  },
+
+  "clear_app_cache": {
+    "endpoint": "/device/clearAppCache",
+    "description": "Clear cached data for a specific app",
+    "parameters": {
+      "package": { "type": "string", "required": true, "description": "Package name of app to clear cache" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    },
+    "safe": true
+  },
+
+  "draw_rect": {
+    "endpoint": "/device/drawRect",
+    "description": "Draw a rectangle overlay on screen for visual debugging",
+    "parameters": {
+      "left": { "type": "number", "required": true, "description": "Left edge X coordinate" },
+      "top": { "type": "number", "required": true, "description": "Top edge Y coordinate" },
+      "right": { "type": "number", "required": true, "description": "Right edge X coordinate" },
+      "bottom": { "type": "number", "required": true, "description": "Bottom edge Y coordinate" },
+      "color": { "type": "string", "default": "#FF0000", "description": "Color in hex format" },
+      "strokeWidth": { "type": "number", "default": 4, "description": "Line thickness" },
+      "durationMs": { "type": "number", "default": 3000, "description": "How long to show overlay" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    },
+    "safe": true
+  },
+
+  "draw_circle": {
+    "endpoint": "/device/drawCircle",
+    "description": "Draw a circle overlay on screen for visual debugging",
+    "parameters": {
+      "centerX": { "type": "number", "required": true, "description": "Circle center X coordinate" },
+      "centerY": { "type": "number", "required": true, "description": "Circle center Y coordinate" },
+      "radius": { "type": "number", "default": 50, "description": "Circle radius in pixels" },
+      "color": { "type": "string", "default": "#00FF00", "description": "Color in hex format" },
+      "strokeWidth": { "type": "number", "default": 4, "description": "Line thickness" },
+      "durationMs": { "type": "number", "default": 3000, "description": "How long to show overlay" }
+    },
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    },
+    "safe": true
+  },
+
+  "clear_overlays": {
+    "endpoint": "/device/clearOverlays",
+    "description": "Clear all debug overlays from screen",
+    "parameters": {},
+    "response": {
+      "success": { "type": "boolean", "required": true }
+    },
+    "safe": true
+  }
+}

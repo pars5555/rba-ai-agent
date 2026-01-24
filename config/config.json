@@ -1,0 +1,28 @@
+{
+  "rba": {
+    "apiBaseUrl": "https://rba.checkout.am/api/v1",
+    "apiKey": ""
+  },
+  "llm": {
+    "provider": "openai",
+    "openai": {
+      "apiKey": "",
+      "model": "gpt-4o"
+    },
+    "anthropic": {
+      "apiKey": "",
+      "model": "claude-sonnet-4-20250514"
+    }
+  },
+  "agent": {
+    "maxSteps": 25,
+    "pauseBetweenSteps": 300
+  },
+  "server": {
+    "port": 3000
+  },
+  "debug": {
+    "logFullState": false,
+    "logPrompts": false
+  }
+}

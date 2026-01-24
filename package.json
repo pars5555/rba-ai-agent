@@ -1,0 +1,17 @@
+{
+  "name": "rba-ai-agent-simple",
+  "version": "2.0.0",
+  "description": "Simplified AI-powered Android device automation",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0",
+    "axios": "^1.6.2",
+    "express": "^4.18.2",
+    "openai": "^4.20.1"
+  }
+}

@@ -3,10 +3,9 @@
   "version": "3.0.0",
   "description": "AI-powered Android device automation with WebSocket support",
   "type": "module",
-  "main": "server.js",
+  "main": "src/server/start.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "node test.js"
+    "start": "node src/server/start.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.0",

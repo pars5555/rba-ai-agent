@@ -1,6 +1,5 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config.js';
 import { log, logLlmCall, logLlmResponse, logLlmError } from '../logger.js';
 
 /**
@@ -8,7 +7,7 @@ import { log, logLlmCall, logLlmResponse, logLlmError } from '../logger.js';
  * Communicates with AI providers (OpenAI, Anthropic) for decision making
  */
 class LLMClient {
-  constructor(agentConfig, getInteractiveMessage) {
+  constructor(config, agentConfig, getInteractiveMessage) {
     this.agentConfig = agentConfig;
     this.getInteractiveMessage = getInteractiveMessage;
     
@@ -118,7 +117,7 @@ class LLMClient {
 
       // Suggest observation if last action wasn't an observation
       const lastAction = history[history.length - 1]?.action;
-      const observeActions = ['get_device_snapshot', 'screen_analyze', 'get_all_sensors'];
+      const observeActions = ['get_device_snapshot', 'screen_analyze', 'get_screenshot'];
       if (lastAction && !observeActions.includes(lastAction)) {
         prompt += `\n💡 TIP: Consider get_device_snapshot to see result of "${lastAction}".\n`;
       }

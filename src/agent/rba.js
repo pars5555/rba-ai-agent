@@ -1,13 +1,14 @@
 import axios from 'axios';
-import { config } from '../config.js';
 import { logApiCall, logApiResponse, logApiError } from '../logger.js';
 
 /**
  * RBA API Client
  * Communicates with the RBA backend to control Android devices
+ * 
+ * Config is passed via constructor (from workerData)
  */
 class RBAClient {
-  constructor(registry) {
+  constructor(config, registry) {
     this.baseURL = config.rba.apiBaseUrl;
     this.apiKey = config.rba.apiKey;
     this.registry = registry;

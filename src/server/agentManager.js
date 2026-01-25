@@ -19,21 +19,19 @@ class AgentManager extends EventEmitter {
   constructor(options = {}) {
     super();
     this.workers = new Map(); // taskId -> { worker, sn, task, startedAt, status }
-    // Worker is in ../agent/worker.js relative to this file
     this.workerPath = path.join(__dirname, '..', 'agent', 'worker.js');
     
     // Logging options
-    this.verbose = options.verbose !== false; // true by default
-    this.logApiBody = options.logApiBody || false; // false by default (can be large)
-    this.maxBodyLogLength = options.maxBodyLogLength || 500; // truncate body logs
+    this.verbose = options.verbose !== false;
+    this.logApiBody = options.logApiBody || false;
+    this.maxBodyLogLength = options.maxBodyLogLength || 500;
+    
+    // Function to get worker config (passed from server.js)
+    this.getWorkerConfig = options.getWorkerConfig;
   }
 
   /**
    * Start a new agent task in a worker thread
-   * @param {string} sn - Device serial number
-   * @param {string} task - Task description
-   * @param {object} options - Task options (maxSteps, speak, etc.)
-   * @returns {object} - { taskId, success }
    */
   startTask(sn, task, options = {}) {
     const taskId = options.taskId || randomUUID();
@@ -49,11 +47,15 @@ class AgentManager extends EventEmitter {
       }
     }
 
+    // Get full config to pass to worker
+    const config = this.getWorkerConfig();
+    
     const workerData = {
       sn,
       task,
       taskId,
-      options
+      options,
+      config  // Contains: rba, llm, agent, prompt, registry
     };
 
     const worker = new Worker(this.workerPath, { workerData });
@@ -70,12 +72,10 @@ class AgentManager extends EventEmitter {
 
     this.workers.set(taskId, workerInfo);
 
-    // Handle worker messages (events from agent)
+    // Handle worker messages
     worker.on('message', (event) => {
       workerInfo.lastEvent = event;
       this.emit('event', { taskId, sn, ...event });
-
-      // Log to console
       this.logEvent(taskId, event);
     });
 
@@ -123,53 +123,36 @@ class AgentManager extends EventEmitter {
   }
 
   /**
-   * Send a message to a running agent (for interactive communication)
-   * @param {string} taskId - Task ID
-   * @param {object} message - Message to send
+   * Send a message to a running agent
    */
   sendMessage(taskId, message) {
     const info = this.workers.get(taskId);
-    if (!info) {
-      return { success: false, error: 'Task not found' };
-    }
-    if (info.status !== 'running') {
-      return { success: false, error: `Task is ${info.status}` };
-    }
-
+    if (!info) return { success: false, error: 'Task not found' };
+    if (info.status !== 'running') return { success: false, error: `Task is ${info.status}` };
     info.worker.postMessage(message);
     return { success: true };
   }
 
   /**
    * Stop a running task
-   * @param {string} taskId - Task ID
    */
   stopTask(taskId) {
     const info = this.workers.get(taskId);
-    if (!info) {
-      return { success: false, error: 'Task not found' };
-    }
-    if (info.status !== 'running') {
-      return { success: false, error: `Task is ${info.status}` };
-    }
-
+    if (!info) return { success: false, error: 'Task not found' };
+    if (info.status !== 'running') return { success: false, error: `Task is ${info.status}` };
     info.worker.terminate();
     info.status = 'stopped';
     info.completedAt = Date.now();
-
     return { success: true };
   }
 
   /**
    * Get status of all tasks or a specific task
-   * @param {string} taskId - Optional task ID
    */
   getStatus(taskId = null) {
     if (taskId) {
       const info = this.workers.get(taskId);
-      if (!info) {
-        return null;
-      }
+      if (!info) return null;
       return {
         taskId,
         sn: info.sn,
@@ -183,7 +166,6 @@ class AgentManager extends EventEmitter {
       };
     }
 
-    // Return all tasks
     const tasks = [];
     for (const [id, info] of this.workers) {
       tasks.push({
@@ -213,10 +195,9 @@ class AgentManager extends EventEmitter {
   }
 
   /**
-   * Log event to console with formatting
-   * @param {boolean} verbose - If true, print full event data
+   * Log event to console
    */
-  logEvent(taskId, event, verbose = true) {
+  logEvent(taskId, event) {
     const ts = new Date().toISOString().slice(11, 23);
     const shortId = taskId.slice(0, 8);
 
@@ -285,8 +266,7 @@ class AgentManager extends EventEmitter {
         console.log(`[${ts}] [${shortId}] ❌ ${event.message}`);
         break;
       default:
-        // For unknown events, print full data if verbose
-        if (verbose) {
+        if (this.verbose) {
           console.log(`[${ts}] [${shortId}] ${event.type}:`, JSON.stringify(event, null, 2));
         } else {
           console.log(`[${ts}] [${shortId}] ${event.type}`);

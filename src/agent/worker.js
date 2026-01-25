@@ -1,6 +1,4 @@
 import { parentPort, workerData } from 'worker_threads';
-import axios from 'axios';
-import { config } from '../config.js';
 import { emit, log, logError } from '../logger.js';
 import RBAClient from './rba.js';
 import LLMClient from './llm.js';
@@ -8,25 +6,27 @@ import LLMClient from './llm.js';
 /**
  * Worker Thread for Agent Tasks
  * 
- * Runs agent loop in isolated thread
- * Sends events to main thread via parentPort
- * Receives messages from main thread (for interactive communication)
+ * All config is passed via workerData from main thread:
+ * - config.rba (apiBaseUrl, apiKey)
+ * - config.llm (provider, openai, anthropic settings)
+ * - config.agent (version, maxSteps, maxDurationSeconds)
+ * - config.prompt (system prompt)
+ * - config.registry (command registry)
  */
 
-// Global state for this worker
-let agentConfig = null;
+// Get everything from workerData
+const { sn, task, taskId, options, config } = workerData;
+
+// Interactive message state
 let interactiveMessage = null;
 
-/**
- * Get and clear interactive message
- */
 function getInteractiveMessage() {
   const msg = interactiveMessage;
   interactiveMessage = null;
   return msg;
 }
 
-// Listen for messages from main thread (interactive communication)
+// Listen for messages from main thread
 parentPort.on('message', (msg) => {
   if (msg.type === 'message') {
     interactiveMessage = msg.content;
@@ -38,59 +38,27 @@ parentPort.on('message', (msg) => {
 });
 
 /**
- * Load agent config from PHP server
- */
-async function loadConfig() {
-  const version = config.agent?.version || 'v1';
-  const url = `${config.rba.apiBaseUrl}/agent/prompt?version=${version}`;
-
-  log(`📋 Loading config (${version})...`);
-
-  try {
-    const response = await axios.get(url, {
-      headers: { 'Authorization': `Bearer ${config.rba.apiKey}` },
-      timeout: 10000
-    });
-
-    if (!response.data?.success || !response.data.prompt || !response.data.registry) {
-      throw new Error(response.data?.message || 'Invalid config response');
-    }
-
-    agentConfig = {
-      prompt: response.data.prompt,
-      registry: response.data.registry
-    };
-
-    log(`✅ Config loaded: ${Object.keys(agentConfig.registry).length} commands`);
-    return true;
-  } catch (error) {
-    logError(`Config load failed: ${error.message}`);
-    return false;
-  }
-}
-
-/**
  * Main Agent Loop
  */
 async function runAgent() {
-  const { sn, task, taskId, options } = workerData;
-
   emit('task_init', { sn, task, taskId, options });
 
-  // Load config
-  if (!await loadConfig()) {
-    emit('fatal', { message: 'Failed to load config' });
+  // Validate config
+  if (!config.prompt || !config.registry) {
+    emit('fatal', { message: 'Missing prompt or registry in config' });
     process.exit(1);
   }
 
+  log(`📋 Config ready: ${Object.keys(config.registry).length} commands`);
+
   // Initialize clients
-  const rba = new RBAClient(agentConfig.registry);
-  const llm = new LLMClient(agentConfig, getInteractiveMessage);
+  const rba = new RBAClient(config, config.registry);
+  const llm = new LLMClient(config, { prompt: config.prompt, registry: config.registry }, getInteractiveMessage);
 
   const maxSteps = options.maxSteps || config.agent?.maxSteps || 100;
   const maxDuration = (options.maxDurationSeconds || config.agent?.maxDurationSeconds || 300) * 1000;
   const speak = options.speak !== false;
-  const hideKeyboard = options.hide_virtual_keyboard !== false; // enabled by default
+  const hideKeyboard = options.hide_virtual_keyboard !== false;
 
   const startTime = Date.now();
 
@@ -148,7 +116,6 @@ async function runAgent() {
       complete: action.complete
     });
 
-    // Log details for debugging (if provided)
     if (action.details) {
       log(`📋 Details: ${action.details}`);
     }
@@ -204,11 +171,10 @@ async function runAgent() {
 
   await rba.reportEvent({ uuid: sn, task_id: taskId, type: 'done', payload: { success, steps: step, elapsed, reason } });
 
-  // Exit with appropriate code
   process.exit(success ? 0 : 1);
 }
 
-// Start agent
+// Start
 runAgent().catch(error => {
   emit('fatal', { message: error.message, stack: error.stack });
   process.exit(1);

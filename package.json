@@ -1,7 +1,7 @@
 {
-  "name": "rba-ai-agent-simple",
-  "version": "2.0.0",
-  "description": "Simplified AI-powered Android device automation",
+  "name": "rba-ai-agent",
+  "version": "3.0.0",
+  "description": "AI-powered Android device automation with WebSocket support",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.20.0",
     "axios": "^1.6.2",
     "express": "^4.18.2",
-    "openai": "^4.20.1"
+    "openai": "^4.20.1",
+    "ws": "^8.18.0"
   }
 }

@@ -1,11 +1,12 @@
 import axios from 'axios';
-import { config, registry } from './config.js';
+import { config } from './config.js';
+import { getAgentConfig } from './agentConfig.js';
 
 /**
  * Simplified RBA API Client
  * - Single generic method to call any command
+ * - Uses registry from server config
  * - Only checks for fatal transport errors
- * - AI analyzes all responses
  */
 class RBAClient {
   constructor() {
@@ -28,7 +29,9 @@ class RBAClient {
       return { success: true, action: 'wait', waited_ms: ms };
     }
 
-    // Get command definition from registry
+    // Get command definition from server config
+    const { registry } = getAgentConfig();
+
     const cmd = registry[action];
     if (!cmd) {
       return { success: false, error: `Unknown action: ${action}` };

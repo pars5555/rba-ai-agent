@@ -15,6 +15,7 @@
     }
   },
   "agent": {
+    "version": "v1",
     "maxSteps": 100,
     "maxDurationSeconds": 300,
     "pauseBetweenSteps": 100

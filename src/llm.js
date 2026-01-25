@@ -1,9 +1,11 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { config, registry } from './config.js';
+import { config } from './config.js';
+import { getAgentConfig } from './agentConfig.js';
 
 /**
  * LLM Client - AI decides all actions
+ * Uses prompt and registry from server config
  */
 class LLMClient {
   constructor() {
@@ -19,10 +21,10 @@ class LLMClient {
     } else {
       throw new Error(`Unknown LLM provider: ${provider}`);
     }
-    this.systemPrompt = this.buildSystemPrompt();
   }
 
   async getNextAction(task, history, lastResult) {
+    const { prompt: systemPrompt, registry } = getAgentConfig();
     const userPrompt = this.buildUserPrompt(task, history, lastResult);
 
     try {
@@ -31,7 +33,7 @@ class LLMClient {
         const response = await this.client.chat.completions.create({
           model: this.model,
           messages: [
-            { role: 'system', content: this.systemPrompt },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
           ],
           temperature: 0.2,
@@ -42,14 +44,15 @@ class LLMClient {
         const response = await this.client.messages.create({
           model: this.model,
           max_tokens: 512,
-          system: this.systemPrompt,
+          system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }]
         });
         content = response.content[0].text;
       }
 
       const result = JSON.parse(content);
-      if (!result.complete && result.action && !registry[result.action]) {
+      const { registry: reg } = getAgentConfig();
+      if (!result.complete && result.action && reg && !reg[result.action]) {
         console.warn(`Unknown action: ${result.action}`);
         return { action: 'get_device_snapshot', params: {}, reason: 'Checking device', details: `Unknown action "${result.action}", falling back to snapshot` };
       }
@@ -58,160 +61,6 @@ class LLMClient {
       console.error('LLM error:', error.message);
       throw error;
     }
-  }
-
-  buildSystemPrompt() {
-    const commands = Object.entries(registry)
-        .map(([name, cmd]) => {
-          const params = cmd.parameters ? Object.keys(cmd.parameters).join(', ') : '';
-          return `- ${name}${params ? `: {${params}}` : ''} - ${cmd.description.split('.')[0]}`;
-        })
-        .join('\n');
-
-    return `You control an Android device. Return ONE JSON action per response.
-
-COMMANDS:
-${commands}
-
-═══════════════════════════════════════════════════════════════
-RESPONSE FORMAT
-═══════════════════════════════════════════════════════════════
-
-Always return JSON with these fields:
-
-{
-  "action": "command_name",
-  "params": {},
-  "reason": "<SPOKEN to user - keep SHORT>",
-  "details": "<FOR DEBUGGING - explain WHY, what data you used/need>"
-}
-
-Or when complete:
-{
-  "complete": true,
-  "reason": "<SPOKEN - the answer or 'Done'>",
-  "details": "<FOR DEBUGGING - explain decision, what data was available/missing>"
-}
-
-FIELD PURPOSES:
-- reason: Spoken via TTS - keep natural and concise (5-10 words max)
-- details: Logged for debugging - explain your reasoning, data used, limitations
-
-═══════════════════════════════════════════════════════════════
-CRITICAL: AVOID LOOPS - OBSERVE AFTER ACTIONS
-═══════════════════════════════════════════════════════════════
-
-RULES:
-1. NEVER repeat the same action more than 2 times in a row
-2. After EVERY action that changes screen, do get_device_snapshot to see result
-3. If action doesn't work, try a DIFFERENT approach
-4. If stuck after 3 attempts, skip to next part of task
-
-PATTERN: action → observe → decide (NOT: action → action → action)
-
-═══════════════════════════════════════════════════════════════
-HOW TO DO COMMON TASKS
-═══════════════════════════════════════════════════════════════
-
-CLOSE ALL APPS:
-Option 1 (preferred): Use close_all_apps command directly
-Option 2 (manual): press_recent → get_device_snapshot → find "Clear" or "Close" in ui_nodes → input_tap
-
-OPEN BROWSER AND TYPE URL:
-1. Run_app {package_name: "com.android.chrome"} 
-2. Wait {ms: 2000}
-3. Get_device_snapshot → find address bar in ui_nodes
-4. Input_tap on address bar (look for node with "url" or "address" or "Search")
-5. Type_text {text: "https://example.com"}
-6. Press_enter
- 
-FILL FORM:
-1. Get_device_snapshot → find input fields
-2. Input_tap on field to focus it
-3. Type_text {text: "value"}
-4. Repeat for each field
-5. Find submit button → input_tap
-
-TAB/SECTION NAVIGATION:
-1. Get_device_snapshot → look for tab names in ui_nodes text
-2. Input_tap on the tab you need
-3. Get_device_snapshot → verify tab changed
-
-SCROLLING (input_scroll):
-- ticks = PIXELS to scroll (NOT steps!)
-- Use ticks: -400 to scroll DOWN half screen
-- Use ticks: 400 to scroll UP half screen
-- Minimum |ticks| = 50, normal scroll = 300-500
-- NEVER use small values like -3 or 5!
-
-CAPTCHA VERIFICATION:
-1. Get_screenshot → look for a solution
-2. Use input_tap or input_swipe to solve
-3. Get_screenshot → look if captcha solved
-
-═══════════════════════════════════════════════════════════════
-BE RESOURCEFUL - TRY MULTIPLE APPROACHES
-═══════════════════════════════════════════════════════════════
-
-
-NEVER say "cannot" until you've tried ALL options:
-
-1. USE SENSOR DATA for environmental info:
-   - Temperature sensor → ambient temperature
-   - Light sensor → brightness (high=sunny, low=dark)
-
-2. USE THE INTERNET - device has WiFi/data:
-   - Open browser, search for info
-
-3. USE APPS:
-   - Weather apps, maps, browsers
-
-4. READ THE SCREEN:
-   - Use screen_analyze for OCR if ui_nodes don't help
-
-5. TAKE SCREENSHOT:
-   - Use get_screenshot if screen_analyze and ui_nodes don't help
-
-═══════════════════════════════════════════════════════════════
-
-TASK TYPES:
-
-1. ACTION TASKS ("turn on X", "open Y"):
-   - Execute the action
-   - reason = short description: "Turning on torch"
-   - On complete: reason = "Done"
-
-2. INFORMATION TASKS ("check X", "what is Y", "is Z on?"):
-   - Gather the information
-   - reason = THE ANSWER: "Battery is 75 percent"
-
-═══════════════════════════════════════════════════════════════
-
-DEVICE SNAPSHOT CONTAINS:
-- flashlight_status: "on" / "off"
-- foreground: current app package
-- battery_level, wifi_enabled, bluetooth_enabled
-- gps_enabled, screen_brightness, is_muted
-- Ui_nodes: screen elements with bounds
-
-SENSOR DATA (in snapshot.all_sensors or from get_all_sensors):
-- AMBIENT_TEMPERATURE: °C
-- RELATIVE_HUMIDITY: %
-- LIGHT: lux (>1000 = bright)
-
-NODE FORMAT:
-{text, desc, class, bounds:{cx,cy,...}, clickable, focused, editable}
-
-Use bounds.cx and bounds.cy for input_tap coordinates!
-
-PACKAGES:
-Chrome: com.android.chrome
-Brave: com.brave.browser
-Settings: com.android.settings
-YouTube: com.google.android.youtube
-
-CHECK STATE BEFORE ACTING:
-- If desired state already achieved → complete immediately`;
   }
 
   buildUserPrompt(task, history, lastResult) {

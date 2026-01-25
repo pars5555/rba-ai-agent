@@ -16,10 +16,6 @@ if (existsSync(localConfigPath)) {
   deepMerge(config, localConfig);
 }
 
-// Load command registry
-const registryPath = join(__dirname, '../config/registry.json');
-const registry = JSON.parse(readFileSync(registryPath, 'utf-8'));
-
 function deepMerge(target, source) {
   for (const key of Object.keys(source)) {
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
@@ -32,4 +28,4 @@ function deepMerge(target, source) {
   return target;
 }
 
-export { config, registry };
+export { config };

@@ -1,8 +1,14 @@
 import express from 'express';
 import http from 'http';
+import https from 'https';
 import { WebSocketServer } from 'ws';
 import axios from 'axios';
 import AgentManager from './agentManager.js';
+
+// Create axios instance that ignores SSL certificate errors
+const axiosInsecure = axios.create({
+  httpsAgent: new https.Agent({ rejectUnauthorized: false })
+});
 
 /**
  * RBA AI Agent Server v4.0 - Task Planner Architecture
@@ -31,7 +37,10 @@ let agentConfig = null;   // Contains: planningPrompt, executionPrompt, registry
 let configLoadedAt = null;
 
 const app = express();
+
+// Create HTTP server (SSL should be handled by reverse proxy like Apache/nginx)
 const server = http.createServer(app);
+console.log('🔓 Using HTTP/WS (use reverse proxy for SSL)');
 
 // Agent Manager - orchestrates worker threads
 let agentManager = null;
@@ -50,7 +59,7 @@ async function loadAllConfig() {
   
   try {
     // Step 1: Load main config from /agent/config
-    const configResponse = await axios.get(`${BOOTSTRAP.apiUrl}/agent/config`, {
+    const configResponse = await axiosInsecure.get(`${BOOTSTRAP.apiUrl}/agent/config`, {
       headers: { 'Authorization': `Bearer ${BOOTSTRAP.apiKey}` },
       timeout: 10000
     });
@@ -67,7 +76,7 @@ async function loadAllConfig() {
     // Step 2: Load agent config (prompts + registry) from /agent/prompt
     // The endpoint now returns both planning and execution prompts
     const version = serverConfig.agent?.version;
-    const promptResponse = await axios.get(`${BOOTSTRAP.apiUrl}/agent/getContext?version=${version}`, {
+    const promptResponse = await axiosInsecure.get(`${BOOTSTRAP.apiUrl}/agent/getContext?version=${version}`, {
       headers: { 'Authorization': `Bearer ${BOOTSTRAP.apiKey}` },
       timeout: 10000
     });

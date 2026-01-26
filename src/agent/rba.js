@@ -1,5 +1,11 @@
 import axios from 'axios';
+import https from 'https';
 import { logApiCall, logApiResponse, logApiError } from '../logger.js';
+
+// Create axios instance that ignores SSL certificate errors
+const axiosInsecure = axios.create({
+  httpsAgent: new https.Agent({ rejectUnauthorized: false })
+});
 
 /**
  * RBA API Client
@@ -46,7 +52,7 @@ class RBAClient {
       const url = `${this.baseURL}${cmd.endpoint}`;
       logApiCall(action, url, body);
 
-      const response = await axios.post(url, body, {
+      const response = await axiosInsecure.post(url, body, {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`
@@ -105,7 +111,7 @@ class RBAClient {
    */
   async reportEvent(event) {
     try {
-      await axios.post(`${this.baseURL}/agent/report`, event, {
+      await axiosInsecure.post(`${this.baseURL}/agent/report`, event, {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`

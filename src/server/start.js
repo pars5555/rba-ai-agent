@@ -154,7 +154,7 @@ wss.on('connection', (ws, req) => {
   });
   
   ws.send(JSON.stringify({
-    type: 'connected',
+    method: 'connected',
     configLoaded: !!agentConfig,
     tasks: agentManager ? agentManager.getStatus() : [],
     runningCount: agentManager ? agentManager.getRunningCount() : 0
@@ -165,7 +165,7 @@ wss.on('connection', (ws, req) => {
       const msg = JSON.parse(data.toString());
       handleWsMessage(ws, msg);
     } catch (e) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
+      ws.send(JSON.stringify({ method: 'error', message: 'Invalid JSON' }));
     }
   });
   
@@ -186,52 +186,52 @@ wss.on('connection', (ws, req) => {
 function handleWsMessage(ws, msg) {
   const client = wsClients.get(ws);
   
-  switch (msg.type) {
+  switch (msg.method) {
     case 'subscribe':
       if (msg.taskId) {
         client.subscriptions.add(msg.taskId);
-        ws.send(JSON.stringify({ type: 'subscribed', taskId: msg.taskId }));
+        ws.send(JSON.stringify({ method: 'subscribed', taskId: msg.taskId }));
       }
       break;
       
     case 'unsubscribe':
       if (msg.taskId) {
         client.subscriptions.delete(msg.taskId);
-        ws.send(JSON.stringify({ type: 'unsubscribed', taskId: msg.taskId }));
+        ws.send(JSON.stringify({ method: 'unsubscribed', taskId: msg.taskId }));
       }
       break;
       
     case 'subscribe_all':
       client.subscriptions.add('*');
-      ws.send(JSON.stringify({ type: 'subscribed', taskId: '*' }));
+      ws.send(JSON.stringify({ method: 'subscribed', taskId: '*' }));
       break;
       
     case 'unsubscribe_all':
       client.subscriptions.delete('*');
-      ws.send(JSON.stringify({ type: 'unsubscribed', taskId: '*' }));
+      ws.send(JSON.stringify({ method: 'unsubscribed', taskId: '*' }));
       break;
 
     case 'stop_task':
       if (!agentManager) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Agent not ready' }));
+        ws.send(JSON.stringify({ method: 'error', message: 'Agent not ready' }));
         break;
       }
       const stopResult = agentManager.stopTask(msg.taskId);
-      ws.send(JSON.stringify({ type: 'task_stopped', ...stopResult }));
+      ws.send(JSON.stringify({ method: 'task_stopped', ...stopResult }));
       break;
       
     case 'send_message':
       if (!agentManager) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Agent not ready' }));
+        ws.send(JSON.stringify({ method: 'error', message: 'Agent not ready' }));
         break;
       }
       const sendResult = agentManager.sendMessage(msg.taskId, { type: 'message', content: msg.content });
-      ws.send(JSON.stringify({ type: 'message_sent', ...sendResult }));
+      ws.send(JSON.stringify({ method: 'message_sent', ...sendResult }));
       break;
       
     case 'get_status':
       ws.send(JSON.stringify({
-        type: 'status',
+        method: 'status',
         configLoaded: !!agentConfig,
         tasks: agentManager ? agentManager.getStatus(msg.taskId) : [],
         runningCount: agentManager ? agentManager.getRunningCount() : 0
@@ -239,11 +239,11 @@ function handleWsMessage(ws, msg) {
       break;
       
     case 'ping':
-      ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+      ws.send(JSON.stringify({ method: 'pong', timestamp: Date.now() }));
       break;
       
     default:
-      ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
+      ws.send(JSON.stringify({ method: 'error', message: `Unknown method: ${msg.method}` }));
   }
 }
 

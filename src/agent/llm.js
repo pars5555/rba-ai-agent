@@ -65,7 +65,7 @@ class LLMClient {
   }
 
   /**
-   * Build execution prompt - just task, plan, current step, and last result
+   * Build execution prompt with key state extracted prominently
    */
   buildExecutionPrompt(task, plan, currentStepIndex, lastResult) {
     let prompt = `TASK: ${task}\n`;
@@ -85,14 +85,70 @@ class LLMClient {
     prompt += `\n═══ CURRENT STEP ${currentStepIndex + 1}/${plan.steps.length} ═══\n`;
     prompt += `${plan.steps[currentStepIndex].description}\n`;
 
-    // Last result
+    // Extract and display KEY STATE prominently (before full result)
     if (lastResult) {
+      const keyState = this.extractKeyState(lastResult);
+      if (keyState) {
+        prompt += `\n═══ ⚡ KEY STATE (IMPORTANT!) ═══\n`;
+        prompt += keyState;
+      }
+
       prompt += `\n═══ LAST RESULT ═══\n`;
       prompt += JSON.stringify(lastResult, null, 2) + '\n';
     }
 
     prompt += `\nRespond with JSON.`;
     return prompt;
+  }
+
+  /**
+   * Extract key state from snapshot - focused element, foreground app, etc.
+   */
+  extractKeyState(result) {
+    if (!result || !result.success) return null;
+
+    const snap = result.snapshot || result;
+    let state = '';
+
+    // Foreground app
+    if (snap.foreground_package) {
+      state += `📱 App: ${snap.foreground_package}\n`;
+    }
+
+    // Device status
+    if (snap.flashlight_status) state += `🔦 Flashlight: ${snap.flashlight_status}\n`;
+    if (snap.is_muted !== undefined) state += `🔇 Muted: ${snap.is_muted}\n`;
+    if (snap.battery_level !== undefined) state += `🔋 Battery: ${snap.battery_level}%\n`;
+
+    // Find FOCUSED element - VERY IMPORTANT for text input
+    const nodes = snap.ui_nodes?.nodes || snap.ui_nodes || [];
+    if (Array.isArray(nodes)) {
+      const focusedNode = nodes.find(n => n.focused === true);
+      if (focusedNode) {
+        state += `\n🎯 FOCUSED ELEMENT (ready for input!):\n`;
+        state += `   Class: ${focusedNode.class || focusedNode.className || 'unknown'}\n`;
+        if (focusedNode.text) state += `   Text: "${focusedNode.text}"\n`;
+        if (focusedNode.desc) state += `   Desc: "${focusedNode.desc}"\n`;
+        if (focusedNode.bounds) {
+          const b = focusedNode.bounds;
+          state += `   Bounds: (${b.cx || b.centerX}, ${b.cy || b.centerY})\n`;
+        }
+        if (focusedNode.editable) state += `   ⌨️ EDITABLE - You can type_text NOW!\n`;
+      }
+
+      // Find editable elements (text fields)
+      const editables = nodes.filter(n => n.editable === true);
+      if (editables.length > 0 && !focusedNode) {
+        state += `\n📝 Editable fields on screen: ${editables.length}\n`;
+        editables.slice(0, 3).forEach((n, i) => {
+          const hint = n.text || n.desc || n.hint || 'empty';
+          const b = n.bounds;
+          state += `   ${i + 1}. "${hint}" at (${b?.cx || b?.centerX || '?'}, ${b?.cy || b?.centerY || '?'})\n`;
+        });
+      }
+    }
+
+    return state || null;
   }
 
   /**

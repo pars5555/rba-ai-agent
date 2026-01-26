@@ -34,7 +34,11 @@ class LLMClient {
   async createPlan(task) {
     const userPrompt = `TASK: ${task}\n\nCreate a step-by-step plan. Respond with JSON.`;
     
+    const systemChars = this.agentConfig.planningPrompt.length;
+    const userChars = userPrompt.length;
+    
     log(`📋 Creating plan for: "${task}"`);
+    log(`   System prompt: ${systemChars} chars, User prompt: ${userChars} chars`);
 
     const content = await this.callLLM(this.agentConfig.planningPrompt, userPrompt);
     const plan = JSON.parse(content);
@@ -49,8 +53,20 @@ class LLMClient {
   async executeStep(task, plan, currentStepIndex, lastResult = null) {
     const userPrompt = this.buildExecutionPrompt(task, plan, currentStepIndex, lastResult);
     
-    const totalChars = this.agentConfig.executionPrompt.length + userPrompt.length;
-    log(`📨 LLM: ${totalChars} chars (step ${currentStepIndex + 1}/${plan.steps.length})`);
+    const systemChars = this.agentConfig.executionPrompt.length;
+    const userChars = userPrompt.length;
+    const totalChars = systemChars + userChars;
+    
+    // Log char counts separately
+    log(`📨 LLM Request (step ${currentStepIndex + 1}/${plan.steps.length}):`);
+    log(`   System prompt: ${systemChars} chars`);
+    log(`   User prompt: ${userChars} chars`);
+    log(`   Total: ${totalChars} chars`);
+    
+    // Log the full user prompt
+    log(`━━━ USER PROMPT START ━━━`);
+    log(userPrompt);
+    log(`━━━ USER PROMPT END ━━━`);
 
     const content = await this.callLLM(this.agentConfig.executionPrompt, userPrompt);
     const result = JSON.parse(content);

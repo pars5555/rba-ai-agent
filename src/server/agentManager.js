@@ -1,224 +1,112 @@
 import { Worker } from 'worker_threads';
 import { EventEmitter } from 'events';
-import { randomUUID } from 'crypto';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * AgentManager - Orchestrates agent workers (Task Planner Architecture)
- * 
- * Responsibilities:
- * - Spawn worker threads for agent tasks
- * - Track running workers by taskId
- * - Receive and broadcast events from workers (including plan events)
- * - Allow interactive communication with running agents
+ * AgentManager - Orchestrates worker threads (Minimal)
  */
 class AgentManager extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.workers = new Map(); // taskId -> { worker, sn, task, startedAt, status, plan, currentStep }
+    this.workers = new Map();
     this.workerPath = path.join(__dirname, '..', 'agent', 'worker.js');
-    
-    // Logging options
-    this.verbose = options.verbose !== false;
-    this.logApiBody = options.logApiBody || false;
-    this.maxBodyLogLength = options.maxBodyLogLength || 500;
-    
-    // Function to get worker config (passed from server.js)
     this.getWorkerConfig = options.getWorkerConfig;
   }
 
-  /**
-   * Start a new agent task in a worker thread
-   */
   startTask(sn, task, options = {}) {
     const taskId = options.taskId || randomUUID();
 
-    // Check if device already has a running task
-    for (const [existingTaskId, info] of this.workers) {
+    // Check if device busy
+    for (const [id, info] of this.workers) {
       if (info.sn === sn && info.status === 'running') {
-        return {
-          success: false,
-          error: `Device ${sn} already has a running task: ${existingTaskId}`,
-          existingTaskId
-        };
+        return { success: false, error: 'Device busy', existingTaskId: id };
       }
     }
 
-    // Get full config to pass to worker
     const config = this.getWorkerConfig();
-    
-    const workerData = {
-      sn,
-      task,
-      taskId,
-      options,
-      config  // Contains: rba, llm, agent, planningPrompt, executionPrompt, registry
-    };
-
-    const worker = new Worker(this.workerPath, { workerData });
+    const worker = new Worker(this.workerPath, {
+      workerData: { sn, task, taskId, options, config }
+    });
 
     const workerInfo = {
       worker,
       sn,
       task,
       taskId,
-      startedAt: Date.now(),
       status: 'running',
-      phase: 'initializing',
-      plan: null,
+      startedAt: Date.now(),
       currentStep: 0,
-      totalSteps: 0,
-      lastEvent: null
+      totalSteps: 0
     };
 
     this.workers.set(taskId, workerInfo);
 
-    // Handle worker messages
+    // Handle messages
     worker.on('message', (event) => {
-      workerInfo.lastEvent = event;
-      
-      // Track plan and progress
       if (event.type === 'plan_created') {
-        workerInfo.plan = event.steps;
         workerInfo.totalSteps = event.stepsCount;
-        workerInfo.phase = 'executing';
-      } else if (event.type === 'phase') {
-        workerInfo.phase = event.phase;
+        workerInfo.plan = event.steps;
       } else if (event.type === 'step_complete') {
-        workerInfo.currentStep = event.stepIndex + 1;
+        workerInfo.currentStep = event.step + 1;
       }
       
-      this.emit('event', { taskId, sn, ...event });
       this.logEvent(taskId, event);
+      this.emit('event', { taskId, ...event });
     });
 
-    // Handle worker exit
     worker.on('exit', (code) => {
       workerInfo.status = code === 0 ? 'completed' : 'failed';
-      workerInfo.exitCode = code;
       workerInfo.completedAt = Date.now();
-      workerInfo.phase = 'finished';
-
-      this.emit('event', {
-        taskId,
-        sn,
-        type: 'worker_exit',
-        code,
-        elapsed: workerInfo.completedAt - workerInfo.startedAt,
-        completedSteps: workerInfo.currentStep,
-        totalSteps: workerInfo.totalSteps
-      });
-
-      // Clean up after 1 hour
-      setTimeout(() => {
-        //todo dont clean all workers, we should clean the workers that stuck only
-        //this.workers.delete(taskId);
-      }, 3600000);
+      
+      this.logEvent(taskId, { type: 'worker_exit', code });
+      this.emit('event', { taskId, type: 'worker_exit', code });
     });
 
-    // Handle worker errors
     worker.on('error', (error) => {
       workerInfo.status = 'error';
-      workerInfo.error = error.message;
-
-      this.emit('event', {
-        taskId,
-        sn,
-        type: 'error',
-        message: error.message
-      });
-    });
-
-    this.emit('event', {
-      taskId,
-      sn,
-      type: 'started',
-      task
+      this.logEvent(taskId, { type: 'worker_error', message: error.message });
+      this.emit('event', { taskId, type: 'worker_error', message: error.message });
     });
 
     return { success: true, taskId, sn, task };
   }
 
-  /**
-   * Send a message to a running agent
-   */
   sendMessage(taskId, message) {
     const info = this.workers.get(taskId);
-    if (!info) return { success: false, error: 'Task not found' };
-    if (info.status !== 'running') return { success: false, error: `Task is ${info.status}` };
+    if (!info || info.status !== 'running') return { success: false, error: 'Task not running' };
     info.worker.postMessage(message);
     return { success: true };
   }
 
-  /**
-   * Stop a running task
-   */
   stopTask(taskId) {
     const info = this.workers.get(taskId);
-    if (!info) return { success: false, error: 'Task not found' };
-    if (info.status !== 'running') return { success: false, error: `Task is ${info.status}` };
-    info.worker.terminate();
-    info.status = 'stopped';
-    info.completedAt = Date.now();
+    if (!info || info.status !== 'running') return { success: false, error: 'Task not running' };
+    info.worker.postMessage({ type: 'stop' });
     return { success: true };
   }
 
-  /**
-   * Get status of all tasks or a specific task
-   */
   getStatus(taskId = null) {
     if (taskId) {
       const info = this.workers.get(taskId);
       if (!info) return null;
       return {
-        taskId,
-        sn: info.sn,
-        task: info.task,
-        status: info.status,
-        phase: info.phase,
-        currentStep: info.currentStep,
-        totalSteps: info.totalSteps,
-        plan: info.plan,
-        startedAt: info.startedAt,
-        completedAt: info.completedAt,
-        elapsed: info.completedAt 
-          ? info.completedAt - info.startedAt 
-          : Date.now() - info.startedAt
+        taskId, sn: info.sn, task: info.task, status: info.status,
+        currentStep: info.currentStep, totalSteps: info.totalSteps,
+        startedAt: info.startedAt, completedAt: info.completedAt
       };
     }
-
-    const tasks = [];
-    for (const [id, info] of this.workers) {
-      tasks.push({
-        taskId: id,
-        sn: info.sn,
-        task: info.task,
-        status: info.status,
-        phase: info.phase,
-        currentStep: info.currentStep,
-        totalSteps: info.totalSteps,
-        startedAt: info.startedAt,
-        completedAt: info.completedAt,
-        elapsed: info.completedAt 
-          ? info.completedAt - info.startedAt 
-          : Date.now() - info.startedAt
-      });
-    }
-    return tasks;
+    return Array.from(this.workers.values()).map(info => ({
+      taskId: info.taskId, sn: info.sn, task: info.task, status: info.status,
+      currentStep: info.currentStep, totalSteps: info.totalSteps
+    }));
   }
 
-  /**
-   * Get running tasks count
-   */
   getRunningCount() {
-    let count = 0;
-    for (const info of this.workers.values()) {
-      if (info.status === 'running') count++;
-    }
-    return count;
+    return Array.from(this.workers.values()).filter(w => w.status === 'running').length;
   }
 
   /**
@@ -226,129 +114,82 @@ class AgentManager extends EventEmitter {
    */
   logEvent(taskId, event) {
     const ts = new Date().toISOString().slice(11, 23);
-    const shortId = taskId.slice(0, 8);
+    const id = taskId.slice(0, 8);
 
     switch (event.type) {
-      case 'log':
-        console.log(`[${ts}] [${shortId}] ${event.message}`);
+      case 'task_init':
+        console.log(`[${ts}] [${id}] 📋 Task: "${event.task}" on ${event.sn}`);
         break;
 
-      // Task Planner specific events
+      case 'task_start':
+        console.log(`[${ts}] [${id}] 🚀 Starting (max ${event.maxSteps} actions, ${event.maxDuration/1000}s)`);
+        break;
+
       case 'phase':
-        const phaseEmoji = event.phase === 'planning' ? '📋' : '🚀';
-        console.log(`[${ts}] [${shortId}] ${phaseEmoji} Phase: ${event.phase.toUpperCase()}`);
+        console.log(`[${ts}] [${id}] ${event.phase === 'planning' ? '📋' : '🚀'} Phase: ${event.phase.toUpperCase()}`);
         break;
 
       case 'plan_created':
-        console.log(`[${ts}] [${shortId}] 📋 Plan created with ${event.stepsCount} steps:`);
-        event.steps?.forEach((step, i) => {
-          console.log(`[${ts}] [${shortId}]    ${i + 1}. ${step.description}`);
-        });
+        console.log(`[${ts}] [${id}] 📋 Plan: ${event.stepsCount} steps`);
+        event.steps?.forEach((s, i) => console.log(`[${ts}] [${id}]    ${i + 1}. ${s.description}`));
         break;
 
       case 'step_start':
-        console.log(`[${ts}] [${shortId}] ── Step ${event.stepIndex + 1}/${event.totalSteps}: ${event.description} ──`);
-        if (event.actionNumber) {
-          console.log(`[${ts}] [${shortId}]    (Action ${event.actionNumber}/${event.maxActions})`);
-        }
+        console.log(`[${ts}] [${id}] ── Step ${event.step + 1}/${event.total}: ${event.description} ──`);
         break;
 
       case 'step_complete':
-        console.log(`[${ts}] [${shortId}] ✓ Step ${event.stepIndex + 1} complete: ${event.description}`);
-        break;
-
-      case 'action_result':
-        console.log(`[${ts}] [${shortId}]    ${event.success ? '✔' : '✗'} ${event.action}${event.error ? ': ' + event.error : ''}`);
+        console.log(`[${ts}] [${id}] ✓ Step ${event.step + 1} complete`);
         break;
 
       case 'ai_decision':
         if (event.complete) {
-          console.log(`[${ts}] [${shortId}]    🤖 AI: TASK COMPLETE${event.reason ? ' - ' + event.reason : ''}`);
+          console.log(`[${ts}] [${id}]    🤖 COMPLETE: ${event.reason || ''}`);
         } else if (event.stepComplete) {
-          console.log(`[${ts}] [${shortId}]    🤖 AI: Step complete${event.reason ? ' - ' + event.reason : ''}`);
+          console.log(`[${ts}] [${id}]    🤖 Step done: ${event.reason || ''}`);
         } else {
-          console.log(`[${ts}] [${shortId}]    🤖 AI: ${event.action}${event.reason ? ' - ' + event.reason : ''}`);
+          console.log(`[${ts}] [${id}]    🤖 ${event.action}: ${event.reason || ''}`);
           if (event.params && Object.keys(event.params).length > 0) {
-            console.log(`[${ts}] [${shortId}]       Params: ${JSON.stringify(event.params)}`);
+            console.log(`[${ts}] [${id}]       ${JSON.stringify(event.params)}`);
           }
-        }
-        if (event.details) {
-          console.log(`[${ts}] [${shortId}]       Details: ${event.details}`);
         }
         break;
 
-      // Original events (backward compatible)
-      case 'step_result':
-        console.log(`[${ts}] [${shortId}]    ${event.success ? '✔' : '✗'} ${event.action}${event.error ? ': ' + event.error : ''}`);
+      case 'action_result':
+        console.log(`[${ts}] [${id}]    ${event.success ? '✔' : '✗'} ${event.action}${event.error ? ': ' + event.error : ''}`);
         break;
 
       case 'api_call':
-        console.log(`[${ts}] [${shortId}]    📤 ${event.action} → ${event.url}`);
-        if (this.logApiBody && event.body) {
-          const bodyDisplay = event.body.length > this.maxBodyLogLength 
-            ? event.body.slice(0, this.maxBodyLogLength) + `... (${event.bodyLength} chars)`
-            : event.body;
-          console.log(`[${ts}] [${shortId}]       Body: ${bodyDisplay}`);
-        }
+        console.log(`[${ts}] [${id}]    📤 ${event.action}`);
         break;
 
       case 'api_response':
-        console.log(`[${ts}] [${shortId}]    📥 ${event.action}: ${event.success ? '✔' : '✗'} (${event.status})`);
+        console.log(`[${ts}] [${id}]    📥 ${event.action}: ${event.success ? '✔' : '✗'}`);
         break;
 
-      case 'api_error':
-        console.log(`[${ts}] [${shortId}]    ❌ API Error: ${event.error}`);
-        break;
-
-      case 'llm_call':
-        console.log(`[${ts}] [${shortId}]    💭 LLM call (step: ${event.historyLength})`);
-        break;
-
-      case 'llm_response':
-        console.log(`[${ts}] [${shortId}]    💭 LLM: ${event.action || 'complete'}${event.complete ? ' ✔DONE' : ''}`);
-        break;
-
-      case 'llm_error':
-        console.log(`[${ts}] [${shortId}]    ❌ LLM Error: ${event.error}`);
-        break;
-
-      case 'task_init':
-        console.log(`[${ts}] [${shortId}] 📋 Task: "${event.task}" on ${event.sn}`);
-        break;
-
-      case 'task_start':
-        console.log(`[${ts}] [${shortId}] 🚀 Starting (max ${event.maxSteps} actions, ${event.maxDuration/1000}s)`);
+      case 'log':
+        console.log(`[${ts}] [${id}] ${event.message}`);
         break;
 
       case 'task_complete':
-        const steps = event.completedSteps !== undefined 
-          ? `${event.completedSteps}/${event.totalSteps} steps`
-          : `${event.steps} steps`;
-        console.log(`[${ts}] [${shortId}] 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${steps}, ${event.elapsed}s)`);
+        console.log(`[${ts}] [${id}] 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${event.steps} steps, ${event.totalActions} actions, ${event.elapsed}s)`);
         break;
 
       case 'timeout':
-        console.log(`[${ts}] [${shortId}] ⏱️ Timeout after ${event.elapsed}ms (at step ${event.atStep + 1})`);
+        console.log(`[${ts}] [${id}] ⏱️ Timeout after ${event.elapsed}s`);
         break;
 
       case 'fatal':
-        console.log(`[${ts}] [${shortId}] 💀 Fatal: ${event.message}`);
+        console.log(`[${ts}] [${id}] ❌ Fatal: ${event.message}`);
         break;
 
       case 'worker_exit':
-        console.log(`[${ts}] [${shortId}] 👋 Worker exit (code: ${event.code}, ${event.completedSteps}/${event.totalSteps} steps)`);
+        console.log(`[${ts}] [${id}] 👋 Exit (code ${event.code})`);
         break;
 
-      case 'error':
-        console.log(`[${ts}] [${shortId}] ❌ ${event.message}`);
+      case 'worker_error':
+        console.log(`[${ts}] [${id}] ❌ Worker error: ${event.message}`);
         break;
-
-      default:
-        if (this.verbose) {
-          console.log(`[${ts}] [${shortId}] ${event.type}:`, JSON.stringify(event, null, 2));
-        } else {
-          console.log(`[${ts}] [${shortId}] ${event.type}`);
-        }
     }
   }
 }

@@ -1,39 +1,31 @@
 import { parentPort, workerData } from 'worker_threads';
-import { emit, log, logError } from '../logger.js';
+import { emit, log } from '../logger.js';
 import RBAClient from './rba.js';
 import LLMClient from './llm.js';
 
 /**
- * Worker Thread with Task Planner Architecture
+ * Worker Thread - Task Planner (Minimal)
  * 
- * Two-phase execution:
- * 1. Planning Phase: Create structured plan from task
- * 2. Execution Phase: Execute steps, tracking progress
- * 
- * Benefits:
- * - No growing history sent to LLM
- * - Clear progress tracking
- * - Efficient token usage
- * - Better structured execution
+ * Simple flow:
+ * 1. Create plan
+ * 2. Execute steps in loop
+ * 3. AI decides everything (actions, step completion, task completion, stopping on error)
  */
 
-// Get everything from workerData
 const { sn, task, taskId, options, config } = workerData;
 
-// Interactive message state
+// Interactive message
 let interactiveMessage = null;
-
 function getInteractiveMessage() {
   const msg = interactiveMessage;
   interactiveMessage = null;
   return msg;
 }
 
-// Listen for messages from main thread
 parentPort.on('message', (msg) => {
   if (msg.type === 'message') {
     interactiveMessage = msg.content;
-    log(`📩 Received interactive message: ${msg.content}`);
+    log(`📩 Message: ${msg.content}`);
   } else if (msg.type === 'stop') {
     log('⛔ Stop requested');
     process.exit(0);
@@ -41,20 +33,20 @@ parentPort.on('message', (msg) => {
 });
 
 /**
- * Main Agent Loop with Task Planner
+ * Main Agent Loop
  */
 async function runAgent() {
   emit('task_init', { sn, task, taskId, options });
 
   // Validate config
   if (!config.planningPrompt || !config.executionPrompt || !config.registry) {
-    emit('fatal', { message: 'Missing prompts or registry in config' });
+    emit('fatal', { message: 'Missing prompts or registry' });
     process.exit(1);
   }
 
-  log(`📋 Config ready: ${Object.keys(config.registry).length} commands`);
+  log(`📋 Config: ${Object.keys(config.registry).length} commands`);
 
-  // Initialize clients
+  // Initialize
   const rba = new RBAClient(config, config.registry);
   const llm = new LLMClient(config, {
     planningPrompt: config.planningPrompt,
@@ -64,25 +56,23 @@ async function runAgent() {
 
   const maxSteps = options.maxSteps || config.agent?.maxSteps || 100;
   const maxDuration = (options.maxDurationSeconds || config.agent?.maxDurationSeconds || 300) * 1000;
-  const maxRetries = options.maxRetries || 3;
   const speak = options.speak !== false;
   const hideKeyboard = options.hide_virtual_keyboard !== false;
 
   const startTime = Date.now();
-
-  emit('task_start', { sn, task, taskId, maxSteps, maxDuration, speak, hideKeyboard });
+  emit('task_start', { sn, task, taskId, maxSteps, maxDuration, speak });
   await rba.reportEvent({ uuid: sn, task_id: taskId, type: 'start', task });
 
-  // Initial setup
-  let initialSnapshot = null;
-  try {
-    initialSnapshot = await rba.call(sn, 'get_device_snapshot', {});
-    
-    if (speak && initialSnapshot?.snapshot?.is_muted) {
-      log('🔇 Unmuting device...');
-      await rba.call(sn, 'volume_mute', { mute: false });
-    }
-  } catch (e) { /* ignore */ }
+  // Setup
+  if (speak) {
+    try {
+      const snapshot = await rba.call(sn, 'get_device_snapshot', {});
+      if (snapshot?.snapshot?.is_muted) {
+        log('🔇 Unmuting...');
+        await rba.call(sn, 'volume_mute', { mute: false });
+      }
+    } catch (e) { /* ignore */ }
+  }
 
   if (hideKeyboard) {
     log('⌨️ Enabling ADB keyboard...');
@@ -93,31 +83,19 @@ async function runAgent() {
   // PHASE 1: PLANNING
   // ═══════════════════════════════════════════════════════════════
   
-  emit('phase', { phase: 'planning', task });
-  log('📋 Phase 1: Creating execution plan...');
+  emit('phase', { phase: 'planning' });
 
   let plan;
   try {
-    plan = await llm.createPlan(task, initialSnapshot?.snapshot);
+    plan = await llm.createPlan(task);
     
     if (!plan.steps || plan.steps.length === 0) {
-      // Task might be already complete or trivial
       if (plan.complete) {
-        emit('task_complete', {
-          success: true,
-          steps: 0,
-          elapsed: Math.round((Date.now() - startTime) / 1000),
-          reason: 'completed_immediately',
-          plan: null
-        });
-        
-        if (speak && plan.reason) {
-          await rba.call(sn, 'speak', { text: plan.reason, speed: 1.0 }).catch(() => {});
-        }
-        
+        log(`✓ Task complete immediately: ${plan.reason}`);
+        await cleanup();
+        emit('task_complete', { success: true, steps: 0, elapsed: elapsed(), reason: 'completed' });
         process.exit(0);
       }
-      
       throw new Error('Plan has no steps');
     }
   } catch (error) {
@@ -127,182 +105,111 @@ async function runAgent() {
 
   emit('plan_created', {
     stepsCount: plan.steps.length,
-    steps: plan.steps.map((s, i) => ({ index: i, description: s.description })),
-    analysis: plan.analysis
+    steps: plan.steps.map((s, i) => ({ index: i, description: s.description }))
   });
 
   // ═══════════════════════════════════════════════════════════════
   // PHASE 2: EXECUTION
   // ═══════════════════════════════════════════════════════════════
   
-  emit('phase', { phase: 'execution', stepsCount: plan.steps.length });
-  log('🚀 Phase 2: Executing plan...');
+  emit('phase', { phase: 'execution' });
 
-  let currentStepIndex = 0;
+  let currentStep = 0;
   let totalActions = 0;
   let lastResult = null;
   let completed = false;
   let fatalError = null;
-  let timedOut = false;
-  let stepRetries = 0;
 
-  while (currentStepIndex < plan.steps.length && totalActions < maxSteps && !completed && !fatalError && !timedOut) {
-    // Check timeout
+  while (currentStep < plan.steps.length && totalActions < maxSteps && !completed && !fatalError) {
+    // Timeout check
     if (Date.now() - startTime > maxDuration) {
-      timedOut = true;
-      emit('timeout', { elapsed: Date.now() - startTime, atStep: currentStepIndex });
+      emit('timeout', { elapsed: elapsed() });
       break;
     }
 
-    const currentStep = plan.steps[currentStepIndex];
-    
-    emit('step_start', {
-      stepIndex: currentStepIndex,totalSteps: plan.steps.length,description: currentStep.description,
-      actionNumber: totalActions + 1,maxActions: maxSteps});
+    emit('step_start', { step: currentStep, total: plan.steps.length, description: plan.steps[currentStep].description });
 
-    log(`\n── Step ${currentStepIndex + 1}/${plan.steps.length}: ${currentStep.description} ──`);
-
-    // Get AI decision for this step
+    // Get AI decision
     let decision;
     try {
-      decision = await llm.executeStep(task, plan, currentStepIndex, lastResult);
+      decision = await llm.executeStep(task, plan, currentStep, lastResult);
     } catch (error) {
       fatalError = { type: 'llm_error', message: error.message };
       break;
     }
 
     emit('ai_decision', {
-      stepIndex: currentStepIndex,
+      step: currentStep,
       action: decision.action,
       params: decision.params,
       reason: decision.reason,
-      details: decision.details,
       stepComplete: decision.stepComplete,
       complete: decision.complete
     });
 
-    if (decision.details) {
-      log(`📋 Details: ${decision.details}`);
-    }
-
-    // Speak reason (fire-and-forget)
+    // Speak
     if (speak && decision.reason) {
       log(`🔊 "${decision.reason}"`);
       rba.call(sn, 'speak', { text: decision.reason, speed: 1.0 }).catch(() => {});
     }
 
-    // Task fully complete
+    // Task complete
     if (decision.complete) {
       completed = true;
       break;
     }
 
-    // Current step complete, move to next
+    // Step complete
     if (decision.stepComplete) {
-      log(`✓ Step ${currentStepIndex + 1} complete`);
-      emit('step_complete', {
-        stepIndex: currentStepIndex,
-        description: currentStep.description
-      });
-      
-      currentStepIndex++;
-      stepRetries = 0;
+      log(`✓ Step ${currentStep + 1} complete`);
+      emit('step_complete', { step: currentStep });
+      currentStep++;
       lastResult = null;
-      
-      // Check if all steps done
-      if (currentStepIndex >= plan.steps.length) {
-        completed = true;
-      }
+      if (currentStep >= plan.steps.length) completed = true;
       continue;
     }
 
-    // Execute the action
+    // Execute action
     totalActions++;
     const result = await rba.call(sn, decision.action, decision.params || {});
-    lastResult = { action: decision.action, params: decision.params, ...result };
+    lastResult = { action: decision.action, ...result };
 
-    emit('action_result', {
-      stepIndex: currentStepIndex,
-      actionNumber: totalActions,
-      action: decision.action,
-      success: result.success,
-      error: result.error
-    });
+    emit('action_result', { step: currentStep, action: decision.action, success: result.success, error: result.error });
 
-    // Check for fatal errors
     if (result._fatal) {
       fatalError = result._fatal;
       break;
     }
 
-    // Handle action failure
-    if (!result.success) {
-      stepRetries++;
-      log(`⚠️ Action failed (retry ${stepRetries}/${maxRetries}): ${result.error}`);
-    } else {
-      // Reset retries on success
-      stepRetries = 0;
-    }
-
-    // Report progress
-    await rba.reportEvent({
-      uuid: sn,
-      task_id: taskId,
-      type: 'process',
-      step: currentStepIndex,
-      action: totalActions,
-      payload: { decision, success: result.success }
-    });
+    await rba.reportEvent({ uuid: sn, task_id: taskId, type: 'process', step: currentStep, payload: { action: decision.action, success: result.success } });
   }
 
   // ═══════════════════════════════════════════════════════════════
   // CLEANUP
   // ═══════════════════════════════════════════════════════════════
-
-  if (hideKeyboard) {
-    log('⌨️ Disabling ADB keyboard...');
-    await rba.call(sn, 'disable_adb_keyboard', {}).catch(() => {});
-  }
-
-  const elapsed = Math.round((Date.now() - startTime) / 1000);
-  const success = completed && !fatalError && !timedOut;
   
-  let reason;
-  if (fatalError) reason = 'fatal_error';
-  else if (timedOut) reason = 'timeout';
-  else if (completed) reason = 'completed';
-  else if (totalActions >= maxSteps) reason = 'max_actions';
-  else reason = 'unknown';
+  await cleanup();
 
-  emit('task_complete', {
-    success,
-    completedSteps: currentStepIndex,
-    totalSteps: plan.steps.length,
-    totalActions,
-    elapsed,
-    reason,
-    fatalError
-  });
+  const success = completed && !fatalError;
+  const reason = fatalError ? 'fatal_error' : completed ? 'completed' : 'max_steps';
 
-  await rba.reportEvent({
-    uuid: sn,
-    task_id: taskId,
-    type: 'done',
-    payload: {
-      success,
-      completedSteps: currentStepIndex,
-      totalSteps: plan.steps.length,
-      totalActions,
-      elapsed,
-      reason
-    }
-  });
+  emit('task_complete', { success, steps: currentStep, totalActions, elapsed: elapsed(), reason });
+  await rba.reportEvent({ uuid: sn, task_id: taskId, type: 'done', payload: { success, steps: currentStep, totalActions, reason } });
 
   process.exit(success ? 0 : 1);
+
+  // Helpers
+  function elapsed() { return Math.round((Date.now() - startTime) / 1000); }
+  
+  async function cleanup() {
+    if (hideKeyboard) {
+      log('⌨️ Disabling ADB keyboard...');
+      await rba.call(sn, 'disable_adb_keyboard', {}).catch(() => {});
+    }
+  }
 }
 
-// Start
 runAgent().catch(error => {
-  emit('fatal', { message: error.message, stack: error.stack });
+  emit('fatal', { message: error.message });
   process.exit(1);
 });

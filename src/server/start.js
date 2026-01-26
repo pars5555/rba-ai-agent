@@ -5,7 +5,12 @@ import axios from 'axios';
 import AgentManager from './agentManager.js';
 
 /**
- * RBA AI Agent Server v3.0
+ * RBA AI Agent Server v4.0 - Task Planner Architecture
+ * 
+ * Changes from v3.0:
+ * - Two-phase execution: Planning → Execution
+ * - Separate prompts for planning and execution
+ * - No growing history - only plan context sent to LLM
  * 
  * Bootstrap Configuration (passed from PHP server via environment variables):
  *   RBA_API_URL  - PHP server API base URL
@@ -22,7 +27,7 @@ const BOOTSTRAP = {
 
 // Loaded configuration (from PHP server)
 let serverConfig = null;  // From /agent/config
-let agentConfig = null;   // From /agent/prompt (prompt + registry)
+let agentConfig = null;   // Contains: planningPrompt, executionPrompt, registry
 let configLoadedAt = null;
 
 const app = express();
@@ -59,24 +64,37 @@ async function loadAllConfig() {
     console.log(`   LLM: ${serverConfig.llm?.provider} (${serverConfig.llm?.[serverConfig.llm?.provider]?.model})`);
     console.log(`   Agent version: ${serverConfig.agent?.version}`);
 
-    // Step 2: Load agent config (prompt + registry) from /agent/prompt
-    const version = serverConfig.agent?.version || 'v1';
-    const promptResponse = await axios.get(`${BOOTSTRAP.apiUrl}/agent/prompt?version=${version}`, {
+    // Step 2: Load agent config (prompts + registry) from /agent/prompt
+    // The endpoint now returns both planning and execution prompts
+    const version = serverConfig.agent?.version;
+    const promptResponse = await axios.get(`${BOOTSTRAP.apiUrl}/agent/getContext?version=${version}`, {
       headers: { 'Authorization': `Bearer ${BOOTSTRAP.apiKey}` },
       timeout: 10000
     });
 
-    if (!promptResponse.data?.success || !promptResponse.data?.prompt || !promptResponse.data?.registry) {
-      throw new Error(promptResponse.data?.message || 'Failed to load agent prompt/registry');
+    if (!promptResponse.data?.success || !promptResponse.data?.registry) {
+      throw new Error(promptResponse.data?.message || 'Failed to load agent prompts/registry');
     }
 
-    agentConfig = {
-      prompt: promptResponse.data.prompt,
-      registry: promptResponse.data.registry
-    };
+    // Support both old format (single prompt) and new format (planning + execution)
+    const responseData = promptResponse.data;
+    
+    if (responseData.planningPrompt && responseData.executionPrompt) {
+      // New format with separate prompts
+      agentConfig = {
+        planningPrompt: responseData.planningPrompt,
+        executionPrompt: responseData.executionPrompt,
+        registry: responseData.registry
+      };
+      console.log(`✅ Agent config loaded (Task Planner mode)`);
+    } else {
+      throw new Error('Invalid prompt format - missing planning/execution prompts');
+    }
     
     configLoadedAt = new Date().toISOString();
-    console.log(`✅ Agent config loaded: ${Object.keys(agentConfig.registry).length} commands`);
+    console.log(`   Commands: ${Object.keys(agentConfig.registry).length}`);
+    console.log(`   Planning prompt: ${agentConfig.planningPrompt.length} chars`);
+    console.log(`   Execution prompt: ${agentConfig.executionPrompt.length} chars`);
     
     return true;
   } catch (error) {
@@ -97,8 +115,9 @@ function getWorkerConfig() {
     },
     llm: serverConfig?.llm,
     agent: serverConfig?.agent,
-    // Include prompt and registry
-    prompt: agentConfig?.prompt,
+    // Task Planner prompts
+    planningPrompt: agentConfig?.planningPrompt,
+    executionPrompt: agentConfig?.executionPrompt,
     registry: agentConfig?.registry
   };
 }
@@ -191,19 +210,7 @@ function handleWsMessage(ws, msg) {
       client.subscriptions.delete('*');
       ws.send(JSON.stringify({ type: 'unsubscribed', taskId: '*' }));
       break;
-      
-    case 'start_task':
-      if (!agentManager || !agentConfig) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Agent not ready' }));
-        break;
-      }
-      const result = agentManager.startTask(msg.sn, msg.task, msg.options || {});
-      ws.send(JSON.stringify({ type: 'task_started', ...result }));
-      if (result.success) {
-        client.subscriptions.add(result.taskId);
-      }
-      break;
-      
+
     case 'stop_task':
       if (!agentManager) {
         ws.send(JSON.stringify({ type: 'error', message: 'Agent not ready' }));
@@ -275,7 +282,7 @@ app.post('/run', (req, res) => {
       sn: result.sn,
       task: result.task,
       wsUrl: `ws://localhost:${BOOTSTRAP.port}`,
-      message: 'Task started. Connect via WebSocket to receive real-time events.'
+      message: 'Task started with Task Planner architecture. Connect via WebSocket for real-time events.'
     });
   } else {
     res.status(409).json(result);
@@ -324,37 +331,6 @@ app.get('/tasks/:taskId', (req, res) => {
 });
 
 /**
- * POST /reload - Reload all config from PHP server
- */
-app.post('/reload', async (req, res) => {
-  try {
-    const success = await loadAllConfig();
-    if (!success) {
-      return res.status(500).json({ success: false, error: 'Failed to reload config' });
-    }
-    
-    // Reinitialize agent manager
-    agentManager = new AgentManager({
-      verbose: serverConfig?.logging?.verbose !== false,
-      logApiBody: serverConfig?.logging?.logApiBody || false,
-      maxBodyLogLength: serverConfig?.logging?.maxBodyLogLength || 500,
-      getWorkerConfig
-    });
-    agentManager.on('event', broadcastEvent);
-    
-    res.json({ 
-      success: true, 
-      message: 'Config reloaded',
-      commands: Object.keys(agentConfig.registry).length,
-      promptLength: agentConfig.prompt.length,
-      loadedAt: configLoadedAt
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-/**
  * GET /config - Get current config (without sensitive data)
  */
 app.get('/config', (req, res) => {
@@ -372,7 +348,8 @@ app.get('/config', (req, res) => {
     agent: serverConfig.agent,
     logging: serverConfig.logging,
     commands: agentConfig?.registry ? Object.keys(agentConfig.registry).length : 0,
-    promptLength: agentConfig?.prompt?.length || 0
+    planningPromptLength: agentConfig?.planningPrompt?.length || 0,
+    executionPromptLength: agentConfig?.executionPrompt?.length || 0
   });
 });
 
@@ -412,7 +389,7 @@ app.get('/health', (req, res) => {
 // Startup
 async function start() {
   console.log(`\n${'═'.repeat(54)}`);
-  console.log(`🚀 RBA AI Agent v3.0`);
+  console.log(`🚀 RBA AI Agent - Task Planner Architecture`);
   console.log(`${'═'.repeat(54)}`);
   
   // Validate bootstrap params
@@ -442,7 +419,7 @@ async function start() {
     getWorkerConfig
   });
   agentManager.on('event', broadcastEvent);
-  console.log('✅ Agent manager initialized');
+  console.log('✅ Agent manager initialized (Task Planner mode)');
 
   // Start HTTP + WebSocket server
   server.listen(BOOTSTRAP.port, () => {
@@ -454,8 +431,10 @@ async function start() {
     console.log('  POST /stop    - Stop task: { taskId }');
     console.log('  POST /message - Send message: { taskId, content }');
     console.log('  GET  /tasks   - List tasks');
-    console.log('  POST /reload  - Reload config');
     console.log('  GET  /health  - Health check\n');
+    console.log('Task Planner Flow:');
+    console.log('  1. 📋 Planning Phase - Create execution plan');
+    console.log('  2. 🚀 Execution Phase - Execute steps with progress tracking\n');
   });
 }
 

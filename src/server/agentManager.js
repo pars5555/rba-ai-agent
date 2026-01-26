@@ -7,18 +7,18 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * AgentManager - Orchestrates agent workers
+ * AgentManager - Orchestrates agent workers (Task Planner Architecture)
  * 
  * Responsibilities:
  * - Spawn worker threads for agent tasks
  * - Track running workers by taskId
- * - Receive and broadcast events from workers
+ * - Receive and broadcast events from workers (including plan events)
  * - Allow interactive communication with running agents
  */
 class AgentManager extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.workers = new Map(); // taskId -> { worker, sn, task, startedAt, status }
+    this.workers = new Map(); // taskId -> { worker, sn, task, startedAt, status, plan, currentStep }
     this.workerPath = path.join(__dirname, '..', 'agent', 'worker.js');
     
     // Logging options
@@ -55,7 +55,7 @@ class AgentManager extends EventEmitter {
       task,
       taskId,
       options,
-      config  // Contains: rba, llm, agent, prompt, registry
+      config  // Contains: rba, llm, agent, planningPrompt, executionPrompt, registry
     };
 
     const worker = new Worker(this.workerPath, { workerData });
@@ -67,6 +67,10 @@ class AgentManager extends EventEmitter {
       taskId,
       startedAt: Date.now(),
       status: 'running',
+      phase: 'initializing',
+      plan: null,
+      currentStep: 0,
+      totalSteps: 0,
       lastEvent: null
     };
 
@@ -75,6 +79,18 @@ class AgentManager extends EventEmitter {
     // Handle worker messages
     worker.on('message', (event) => {
       workerInfo.lastEvent = event;
+      
+      // Track plan and progress
+      if (event.type === 'plan_created') {
+        workerInfo.plan = event.steps;
+        workerInfo.totalSteps = event.stepsCount;
+        workerInfo.phase = 'executing';
+      } else if (event.type === 'phase') {
+        workerInfo.phase = event.phase;
+      } else if (event.type === 'step_complete') {
+        workerInfo.currentStep = event.stepIndex + 1;
+      }
+      
       this.emit('event', { taskId, sn, ...event });
       this.logEvent(taskId, event);
     });
@@ -84,18 +100,22 @@ class AgentManager extends EventEmitter {
       workerInfo.status = code === 0 ? 'completed' : 'failed';
       workerInfo.exitCode = code;
       workerInfo.completedAt = Date.now();
+      workerInfo.phase = 'finished';
 
       this.emit('event', {
         taskId,
         sn,
         type: 'worker_exit',
         code,
-        elapsed: workerInfo.completedAt - workerInfo.startedAt
+        elapsed: workerInfo.completedAt - workerInfo.startedAt,
+        completedSteps: workerInfo.currentStep,
+        totalSteps: workerInfo.totalSteps
       });
 
       // Clean up after 1 hour
       setTimeout(() => {
-        this.workers.delete(taskId);
+        //todo dont clean all workers, we should clean the workers that stuck only
+        //this.workers.delete(taskId);
       }, 3600000);
     });
 
@@ -158,6 +178,10 @@ class AgentManager extends EventEmitter {
         sn: info.sn,
         task: info.task,
         status: info.status,
+        phase: info.phase,
+        currentStep: info.currentStep,
+        totalSteps: info.totalSteps,
+        plan: info.plan,
         startedAt: info.startedAt,
         completedAt: info.completedAt,
         elapsed: info.completedAt 
@@ -173,6 +197,9 @@ class AgentManager extends EventEmitter {
         sn: info.sn,
         task: info.task,
         status: info.status,
+        phase: info.phase,
+        currentStep: info.currentStep,
+        totalSteps: info.totalSteps,
         startedAt: info.startedAt,
         completedAt: info.completedAt,
         elapsed: info.completedAt 
@@ -205,21 +232,56 @@ class AgentManager extends EventEmitter {
       case 'log':
         console.log(`[${ts}] [${shortId}] ${event.message}`);
         break;
+
+      // Task Planner specific events
+      case 'phase':
+        const phaseEmoji = event.phase === 'planning' ? '📋' : '🚀';
+        console.log(`[${ts}] [${shortId}] ${phaseEmoji} Phase: ${event.phase.toUpperCase()}`);
+        break;
+
+      case 'plan_created':
+        console.log(`[${ts}] [${shortId}] 📋 Plan created with ${event.stepsCount} steps:`);
+        event.steps?.forEach((step, i) => {
+          console.log(`[${ts}] [${shortId}]    ${i + 1}. ${step.description}`);
+        });
+        break;
+
       case 'step_start':
-        console.log(`[${ts}] [${shortId}] ── Step ${event.step}/${event.maxSteps} ──`);
+        console.log(`[${ts}] [${shortId}] ── Step ${event.stepIndex + 1}/${event.totalSteps}: ${event.description} ──`);
+        if (event.actionNumber) {
+          console.log(`[${ts}] [${shortId}]    (Action ${event.actionNumber}/${event.maxActions})`);
+        }
         break;
-      case 'step_result':
-        console.log(`[${ts}] [${shortId}]    ${event.success ? '✓' : '✗'} ${event.action}${event.error ? ': ' + event.error : ''}`);
+
+      case 'step_complete':
+        console.log(`[${ts}] [${shortId}] ✓ Step ${event.stepIndex + 1} complete: ${event.description}`);
         break;
+
+      case 'action_result':
+        console.log(`[${ts}] [${shortId}]    ${event.success ? '✔' : '✗'} ${event.action}${event.error ? ': ' + event.error : ''}`);
+        break;
+
       case 'ai_decision':
-        console.log(`[${ts}] [${shortId}]    🤖 AI: ${event.action || 'complete'}${event.reason ? ' - ' + event.reason : ''}`);
-        if (event.params && Object.keys(event.params).length > 0) {
-          console.log(`[${ts}] [${shortId}]       Params: ${JSON.stringify(event.params)}`);
+        if (event.complete) {
+          console.log(`[${ts}] [${shortId}]    🤖 AI: TASK COMPLETE${event.reason ? ' - ' + event.reason : ''}`);
+        } else if (event.stepComplete) {
+          console.log(`[${ts}] [${shortId}]    🤖 AI: Step complete${event.reason ? ' - ' + event.reason : ''}`);
+        } else {
+          console.log(`[${ts}] [${shortId}]    🤖 AI: ${event.action}${event.reason ? ' - ' + event.reason : ''}`);
+          if (event.params && Object.keys(event.params).length > 0) {
+            console.log(`[${ts}] [${shortId}]       Params: ${JSON.stringify(event.params)}`);
+          }
         }
         if (event.details) {
           console.log(`[${ts}] [${shortId}]       Details: ${event.details}`);
         }
         break;
+
+      // Original events (backward compatible)
+      case 'step_result':
+        console.log(`[${ts}] [${shortId}]    ${event.success ? '✔' : '✗'} ${event.action}${event.error ? ': ' + event.error : ''}`);
+        break;
+
       case 'api_call':
         console.log(`[${ts}] [${shortId}]    📤 ${event.action} → ${event.url}`);
         if (this.logApiBody && event.body) {
@@ -229,42 +291,58 @@ class AgentManager extends EventEmitter {
           console.log(`[${ts}] [${shortId}]       Body: ${bodyDisplay}`);
         }
         break;
+
       case 'api_response':
-        console.log(`[${ts}] [${shortId}]    📥 ${event.action}: ${event.success ? '✓' : '✗'} (${event.status})`);
+        console.log(`[${ts}] [${shortId}]    📥 ${event.action}: ${event.success ? '✔' : '✗'} (${event.status})`);
         break;
+
       case 'api_error':
         console.log(`[${ts}] [${shortId}]    ❌ API Error: ${event.error}`);
         break;
+
       case 'llm_call':
-        console.log(`[${ts}] [${shortId}]    💭 LLM call (history: ${event.historyLength})`);
+        console.log(`[${ts}] [${shortId}]    💭 LLM call (step: ${event.historyLength})`);
         break;
+
       case 'llm_response':
-        console.log(`[${ts}] [${shortId}]    💭 LLM: ${event.action || 'complete'}${event.complete ? ' ✓DONE' : ''}`);
+        console.log(`[${ts}] [${shortId}]    💭 LLM: ${event.action || 'complete'}${event.complete ? ' ✔DONE' : ''}`);
         break;
+
       case 'llm_error':
         console.log(`[${ts}] [${shortId}]    ❌ LLM Error: ${event.error}`);
         break;
+
       case 'task_init':
         console.log(`[${ts}] [${shortId}] 📋 Task: "${event.task}" on ${event.sn}`);
         break;
+
       case 'task_start':
-        console.log(`[${ts}] [${shortId}] 🚀 Starting (max ${event.maxSteps} steps, ${event.maxDuration/1000}s)`);
+        console.log(`[${ts}] [${shortId}] 🚀 Starting (max ${event.maxSteps} actions, ${event.maxDuration/1000}s)`);
         break;
+
       case 'task_complete':
-        console.log(`[${ts}] [${shortId}] 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${event.steps} steps, ${event.elapsed}s)`);
+        const steps = event.completedSteps !== undefined 
+          ? `${event.completedSteps}/${event.totalSteps} steps`
+          : `${event.steps} steps`;
+        console.log(`[${ts}] [${shortId}] 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${steps}, ${event.elapsed}s)`);
         break;
+
       case 'timeout':
-        console.log(`[${ts}] [${shortId}] ⏱️ Timeout after ${event.elapsed}ms`);
+        console.log(`[${ts}] [${shortId}] ⏱️ Timeout after ${event.elapsed}ms (at step ${event.atStep + 1})`);
         break;
+
       case 'fatal':
         console.log(`[${ts}] [${shortId}] 💀 Fatal: ${event.message}`);
         break;
+
       case 'worker_exit':
-        console.log(`[${ts}] [${shortId}] 👋 Worker exit (code: ${event.code})`);
+        console.log(`[${ts}] [${shortId}] 👋 Worker exit (code: ${event.code}, ${event.completedSteps}/${event.totalSteps} steps)`);
         break;
+
       case 'error':
         console.log(`[${ts}] [${shortId}] ❌ ${event.message}`);
         break;
+
       default:
         if (this.verbose) {
           console.log(`[${ts}] [${shortId}] ${event.type}:`, JSON.stringify(event, null, 2));

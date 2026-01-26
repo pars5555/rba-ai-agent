@@ -15,6 +15,8 @@ class AgentManager extends EventEmitter {
     this.workers = new Map();
     this.workerPath = path.join(__dirname, '..', 'agent', 'worker.js');
     this.getWorkerConfig = options.getWorkerConfig;
+    // How long to keep completed/failed tasks in the list (default: 60 seconds)
+    this.taskRetentionMs = options.taskRetentionMs || 60000;
   }
 
   startTask(sn, task, options = {}) {
@@ -60,6 +62,9 @@ class AgentManager extends EventEmitter {
       workerInfo.completedAt = Date.now();
       this.logEvent(taskId, { type: 'worker_exit', code });
       this.emit('event', { taskId, type: 'worker_exit', code });
+      
+      // Schedule task removal after retention period
+      this.scheduleTaskRemoval(taskId);
     });
 
     worker.on('error', (error) => {
@@ -104,6 +109,45 @@ class AgentManager extends EventEmitter {
 
   getRunningCount() {
     return Array.from(this.workers.values()).filter(w => w.status === 'running').length;
+  }
+
+  /**
+   * Schedule removal of a completed/failed task after retention period
+   */
+  scheduleTaskRemoval(taskId) {
+    setTimeout(() => {
+      const info = this.workers.get(taskId);
+      if (info && info.status !== 'running') {
+        this.workers.delete(taskId);
+        this.emit('event', { taskId, type: 'task_removed' });
+        console.log(`[cleanup] Removed task ${taskId.slice(0, 8)} from memory`);
+      }
+    }, this.taskRetentionMs);
+  }
+
+  /**
+   * Manually remove a specific task
+   */
+  removeTask(taskId) {
+    const info = this.workers.get(taskId);
+    if (!info) return { success: false, error: 'Task not found' };
+    if (info.status === 'running') return { success: false, error: 'Cannot remove running task' };
+    this.workers.delete(taskId);
+    return { success: true };
+  }
+
+  /**
+   * Remove all completed/failed tasks
+   */
+  clearCompletedTasks() {
+    let removed = 0;
+    for (const [taskId, info] of this.workers) {
+      if (info.status !== 'running') {
+        this.workers.delete(taskId);
+        removed++;
+      }
+    }
+    return { success: true, removed };
   }
 
   logEvent(taskId, event) {

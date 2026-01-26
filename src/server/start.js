@@ -250,6 +250,22 @@ function handleWsMessage(ws, msg) {
     case 'ping':
       ws.send(JSON.stringify({ method: 'pong', timestamp: Date.now() }));
       break;
+    
+    case 'clear_tasks':
+      if (!agentManager) {
+        ws.send(JSON.stringify({ method: 'error', message: 'Agent not ready' }));
+        break;
+      }
+      const clearResult = agentManager.clearCompletedTasks();
+      ws.send(JSON.stringify({ method: 'tasks_cleared', ...clearResult }));
+      // Send updated task list
+      ws.send(JSON.stringify({
+        method: 'status',
+        configLoaded: !!agentConfig,
+        tasks: agentManager.getStatus(),
+        runningCount: agentManager.getRunningCount()
+      }));
+      break;
       
     default:
       ws.send(JSON.stringify({ method: 'error', message: `Unknown method: ${msg.method}` }));
@@ -273,6 +289,9 @@ app.use((req, res, next) => {
  */
 app.post('/run', (req, res) => {
   const { sn, task, ...options } = req.body;
+
+  console.log('[/run] Request body:', JSON.stringify(req.body));
+  console.log('[/run] Options extracted:', JSON.stringify(options));
 
   if (!sn || !task) {
     return res.status(400).json({ success: false, error: 'Missing sn or task' });
@@ -337,6 +356,25 @@ app.get('/tasks/:taskId', (req, res) => {
   const status = agentManager.getStatus(req.params.taskId);
   if (!status) return res.status(404).json({ success: false, error: 'Task not found' });
   res.json({ success: true, ...status });
+});
+
+/**
+ * DELETE /tasks/:taskId - Remove a completed/failed task
+ */
+app.delete('/tasks/:taskId', (req, res) => {
+  if (!agentManager) return res.status(503).json({ success: false, error: 'Agent not ready' });
+  const result = agentManager.removeTask(req.params.taskId);
+  if (!result.success) return res.status(400).json(result);
+  res.json(result);
+});
+
+/**
+ * POST /tasks/clear - Remove all completed/failed tasks
+ */
+app.post('/tasks/clear', (req, res) => {
+  if (!agentManager) return res.status(503).json({ success: false, error: 'Agent not ready' });
+  const result = agentManager.clearCompletedTasks();
+  res.json(result);
 });
 
 /**

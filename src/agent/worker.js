@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'worker_threads';
-import { emit, log } from '../logger.js';
+import { emit, log, getHumanErrorMessage } from './util.js';
 import RBAClient from './rba.js';
 import LLMClient from './llm.js';
 
@@ -13,6 +13,9 @@ import LLMClient from './llm.js';
  */
 
 const { sn, task, taskId, options, config } = workerData;
+
+// Debug: Log received options
+console.log(`[worker] Options received:`, JSON.stringify(options));
 
 // Interactive message
 let interactiveMessage = null;
@@ -66,9 +69,12 @@ async function runAgent() {
   const maxDuration = (options.maxDurationSeconds || config.agent?.maxDurationSeconds || 300) * 1000;
   const speak = options.speak !== false;
   const hideKeyboard = options.hide_virtual_keyboard !== false;
+  const disableStatusBar = options.disable_status_bar === true; // disabled by default
 
   emit('task_start', { sn, task, taskId, maxActions, maxDurationMs: maxDuration });
   await rba.reportEvent({ uuid: sn, task_id: taskId, type: 'start', task });
+
+  log(`⚙️ Options: speak=${speak}, hideKeyboard=${hideKeyboard}, disableStatusBar=${disableStatusBar}`);
 
   // Initial setup
   if (speak) {
@@ -84,6 +90,11 @@ async function runAgent() {
   if (hideKeyboard) {
     log('⌨️ Enabling ADB keyboard...');
     await rba.call(sn, 'enable_adb_keyboard', {});
+  }
+
+  if (disableStatusBar) {
+    log('📵 Disabling status bar...');
+    await rba.call(sn, 'disable_status_bar', {});
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -110,6 +121,11 @@ async function runAgent() {
     }
   } catch (error) {
     log(`❌ Planning failed: ${error.message}`);
+    if (speak) {
+      const speechMsg = `I could not create a plan for this task. ${error.message}`;
+      log(`🔊 Speaking error: "${speechMsg}"`);
+      await rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
+    }
     emit('fatal', { message: `Planning failed: ${error.message}` });
     process.exit(1);
   }
@@ -136,12 +152,16 @@ async function runAgent() {
 
   // Track actions for CURRENT step only
   let stepActions = [];
+  
+  // Track expected foreground package (set by AI when working within an app)
+  let expectedForegroundPackage = null;
 
   while (currentStep < plan.steps.length && totalActions < maxActions && !completed && !fatalError) {
     // Timeout check
     if (Date.now() - startTime > maxDuration) {
       log(`⏱️ Timeout after ${elapsed()}s`);
       emit('timeout', { elapsed: elapsed(), atStep: currentStep });
+      // Note: speech will happen in the cleanup section
       break;
     }
 
@@ -160,6 +180,7 @@ async function runAgent() {
       log(`💀 LLM Error: ${error.message}`);
       log(`   Stack: ${error.stack}`);
       fatalError = { type: 'llm_error', message: error.message, stack: error.stack };
+      // Note: speech will happen in the cleanup section
       break;
     }
 
@@ -170,8 +191,19 @@ async function runAgent() {
       reason: decision.reason,
       stepComplete: decision.stepComplete,
       complete: decision.complete,
-      error: decision.error
+      error: decision.error,
+      expectedForegroundPackage: decision.expectedForegroundPackage
     });
+
+    // Update expected foreground package if AI specified one
+    if (decision.expectedForegroundPackage) {
+      expectedForegroundPackage = decision.expectedForegroundPackage;
+      log(`📦 Expected foreground: ${expectedForegroundPackage}`);
+    } else if (decision.expectedForegroundPackage === null) {
+      // AI explicitly cleared the expectation (task no longer requires specific app)
+      expectedForegroundPackage = null;
+      log(`📦 Cleared foreground expectation`);
+    }
 
     // Speak reason
     if (speak && decision.reason) {
@@ -190,6 +222,13 @@ async function runAgent() {
     if (decision.error) {
       log(`❌ Step ${currentStep + 1} failed: ${decision.error}`);
       emit('step_failed', { step: currentStep, error: decision.error, actionsUsed: stepActions.length });
+
+      // Speak step failure
+      if (speak) {
+        const speechMsg = `Step ${currentStep + 1} failed: ${decision.error}`;
+        log(`🔊 Speaking step error: "${speechMsg}"`);
+        rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
+      }
 
       // Move to next step
       currentStep++;
@@ -218,6 +257,7 @@ async function runAgent() {
     log(`⚡ [${totalActions}] ${decision.action}${decision.params ? ' ' + JSON.stringify(decision.params) : ''}`);
 
     const result = await rba.call(sn, decision.action, decision.params || {});
+    log(`⚡ api result [${totalActions}] ${JSON.stringify(result)}`);
 
     // Track this action in step history
     stepActions.push({
@@ -242,6 +282,49 @@ async function runAgent() {
       log(`⚠️ Action failed: ${result.error || 'unknown'}`);
     }
 
+    // Check for response validation errors (missing properties from registry schema)
+    if (result._responseValidationError) {
+      const err = result._responseValidationError;
+      log(`⚠️ Response validation error: ${err.message}`);
+      emit('response_validation_error', {
+        action: err.action,
+        missingProperties: err.missingProperties
+      });
+      // This is a fatal error - device response doesn't match expected schema
+      fatalError = { 
+        type: 'response_validation_error', 
+        message: err.message,
+        missingProperties: err.missingProperties
+      };
+      break;
+    }
+
+    // Verify foreground package after get_device_snapshot
+    if (decision.action === 'get_device_snapshot' && result.success && result.snapshot) {
+      const actualForeground = result.snapshot.foreground_package;
+      
+      // Check if AI expects a specific foreground app
+      if (expectedForegroundPackage && actualForeground) {
+        if (actualForeground !== expectedForegroundPackage) {
+          log(`❌ Foreground mismatch! Expected: ${expectedForegroundPackage}, Actual: ${actualForeground}`);
+          emit('foreground_mismatch', {
+            expected: expectedForegroundPackage,
+            actual: actualForeground,
+            step: currentStep
+          });
+          fatalError = {
+            type: 'foreground_mismatch',
+            message: `Expected app ${expectedForegroundPackage} but found ${actualForeground}. App may have crashed, closed, or focus was lost.`,
+            expected: expectedForegroundPackage,
+            actual: actualForeground
+          };
+          break;
+        } else {
+          log(`✓ Foreground verified: ${actualForeground}`);
+        }
+      }
+    }
+
     if (result._fatal) {
       fatalError = result._fatal;
       log(`💀 Fatal error from RBA: ${JSON.stringify(result._fatal)}`);
@@ -260,13 +343,22 @@ async function runAgent() {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CLEANUP
+  // CLEANUP & SPEAK RESULT
   // ═══════════════════════════════════════════════════════════════
-
-  await cleanup();
 
   const success = completed && !fatalError;
   const reason = fatalError ? 'fatal_error' : completed ? 'completed' : totalActions >= maxActions ? 'max_actions' : 'timeout';
+
+  // Speak error/result BEFORE cleanup (while device is still responsive)
+  if (speak && !success) {
+    const speechMsg = getHumanErrorMessage(fatalError, reason, currentStep, plan.steps.length);
+    log(`🔊 Speaking result: "${speechMsg}"`);
+    await rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
+    // Wait a bit for speech to complete
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  await cleanup();
 
   log(`\n${'═'.repeat(60)}`);
   log(`🏁 ${success ? 'SUCCESS' : 'FAILED'} - ${reason}`);
@@ -301,6 +393,10 @@ async function runAgent() {
     if (hideKeyboard) {
       log('⌨️ Disabling ADB keyboard...');
       await rba.call(sn, 'disable_adb_keyboard', {}).catch(() => {});
+    }
+    if (disableStatusBar) {
+      log('📵 Re-enabling status bar...');
+      await rba.call(sn, 'enable_status_bar', {}).catch(() => {});
     }
   }
 }

@@ -26,11 +26,11 @@ src/
 ├── server/
 │   ├── start.js         # HTTP + WebSocket server
 │   └── agentManager.js  # Worker management
-├── agent/
-│   ├── worker.js        # Simple plan → execute loop
-│   ├── llm.js           # LLM calls (createPlan, executeStep)
-│   └── rba.js           # RBA API client
-└── logger.js            # Centralized logging
+└── agent/
+    ├── worker.js        # Simple plan → execute loop
+    ├── llm.js           # LLM calls (createPlan, executeStep)
+    ├── rba.js           # RBA API client
+    └── util.js          # Logging, helpers, prompt building
 ```
 
 ## Configuration

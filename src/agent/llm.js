@@ -10,7 +10,7 @@ class LLMClient {
   constructor(config, agentConfig, getInteractiveMessage) {
     this.agentConfig = agentConfig;
     this.getInteractiveMessage = getInteractiveMessage;
-    
+
     const provider = config.llm.provider;
     if (provider === 'openai') {
       this.provider = 'openai';
@@ -62,6 +62,8 @@ class LLMClient {
         });
         content = response.content[0].text;
       }
+      const totalChars = this.agentConfig.prompt.length + userPrompt.length;
+      log(`📨 LLM Request: ${totalChars} chars (system: ${this.agentConfig.prompt.length}, user: ${userPrompt.length})`);
 
       const result = JSON.parse(content);
 
@@ -86,16 +88,10 @@ class LLMClient {
   buildUserPrompt(task, history, lastResult) {
     let prompt = `TASK: ${task}\n`;
 
-    // Info task detection
-    const infoKeywords = ['check', 'what', 'is ', 'are ', 'tell me', 'show me', 'how much', 'how many', 'status', 'level', 'whether', 'weather'];
-    if (infoKeywords.some(kw => task.toLowerCase().includes(kw))) {
-      prompt += `[INFO TASK - reason must include THE ANSWER. Use sensors/browser/apps to find it.]\n`;
-    }
-
     // Include interactive message if available
     const interactiveMessage = this.getInteractiveMessage?.();
     if (interactiveMessage) {
-      prompt += `\n💬 USER MESSAGE: "${interactiveMessage}"\n`;
+      prompt += `\n💬 USER MESSAGE DURING TASK: "${interactiveMessage}"\n`;
     }
 
     if (history.length > 0) {
@@ -106,97 +102,14 @@ class LLMClient {
         prompt += `  ${i + 1}. [${status}] ${h.action}${params}\n`;
       });
 
-      // LOOP DETECTION - check last 3 actions
-      const last3 = history.slice(-3).map(h => h.action);
-      if (last3.length === 3 && last3[0] === last3[1] && last3[1] === last3[2]) {
-        prompt += `\n⚠️ LOOP DETECTED: "${last3[0]}" repeated 3 times!\n`;
-        prompt += `→ You MUST try a DIFFERENT action or approach now.\n`;
-        prompt += `→ If trying to close apps manually failed, use close_all_apps command.\n`;
-        prompt += `→ If stuck, skip this step and proceed with the task.\n`;
-      }
-
-      // Suggest observation if last action wasn't an observation
-      const lastAction = history[history.length - 1]?.action;
-      const observeActions = ['get_device_snapshot', 'screen_analyze', 'get_screenshot'];
-      if (lastAction && !observeActions.includes(lastAction)) {
-        prompt += `\n💡 TIP: Consider get_device_snapshot to see result of "${lastAction}".\n`;
-      }
     }
 
     if (lastResult) {
       prompt += `\nLAST RESULT:\n${JSON.stringify(lastResult, null, 2)}\n`;
-
-      // Extract key state from snapshot
-      if (lastResult.action === 'get_device_snapshot' && lastResult.success) {
-        prompt += this.extractKeyState(lastResult);
-      }
-
-      // Extract sensor data from get_all_sensors
-      if (lastResult.action === 'get_all_sensors' && lastResult.success && lastResult.sensors) {
-        prompt += this.extractSensorData(lastResult.sensors);
-      }
-    } else {
-      prompt += `\n(Start with get_device_snapshot)\n`;
     }
 
-    prompt += `\nNext action? Remember: observe after actions, avoid loops, use close_all_apps if manual close fails. Include "details" field explaining your reasoning`;
+    prompt += `\nNext action? Remember: observe after actions, avoid loops. Include "details" field explaining your reasoning.`;
     return prompt;
-  }
-
-  /**
-   * Extract key state information from device snapshot
-   */
-  extractKeyState(lastResult) {
-    let state = `\n📊 KEY STATE:\n`;
-    const snap = lastResult.snapshot || lastResult;
-
-    if (snap.flashlight_status) state += `   - Torch: ${snap.flashlight_status}\n`;
-    if (snap.foreground) state += `   - App: ${snap.foreground}\n`;
-    if (snap.battery_level !== undefined) state += `   - Battery: ${snap.battery_level}%\n`;
-    if (snap.wifi_enabled !== undefined) state += `   - WiFi: ${snap.wifi_enabled ? 'on' : 'off'}\n`;
-    if (snap.bluetooth_enabled !== undefined) state += `   - Bluetooth: ${snap.bluetooth_enabled ? 'on' : 'off'}\n`;
-    if (snap.gps_enabled !== undefined) state += `   - GPS: ${snap.gps_enabled ? 'on' : 'off'}\n`;
-    if (snap.screen_brightness !== undefined) state += `   - Brightness: ${snap.screen_brightness}\n`;
-    if (snap.location) state += `   - Location: ${JSON.stringify(snap.location)}\n`;
-
-    // Count UI nodes and find important ones
-    const nodes = snap.ui_nodes?.nodes || snap.ui_nodes || [];
-    const nodeCount = Array.isArray(nodes) ? nodes.length : 0;
-    state += `   - UI nodes: ${nodeCount} elements\n`;
-
-    // Look for useful buttons/elements
-    if (Array.isArray(nodes)) {
-      const clearAll = nodes.find(n =>
-        (n.text || n.desc || '').toLowerCase().includes('clear all')
-      );
-      if (clearAll && clearAll.bounds) {
-        state += `   - 🎯 "Clear all" button at (${clearAll.bounds.cx}, ${clearAll.bounds.cy})\n`;
-      }
-    }
-
-    // Extract sensor data from snapshot if available
-    if (snap.all_sensors) {
-      state += this.extractSensorData(snap.all_sensors);
-    }
-
-    return state;
-  }
-
-  /**
-   * Extract sensor data from sensors object
-   */
-  extractSensorData(sensors) {
-    let state = `\n🌡️ SENSOR DATA:\n`;
-    for (const [id, sensor] of Object.entries(sensors)) {
-      if (sensor.name && sensor.values) {
-        const val = Array.isArray(sensor.values) ? sensor.values[0] : sensor.values;
-        if (sensor.name.includes('TEMPERATURE')) state += `   - Temperature: ${val?.toFixed?.(1) || val}°C\n`;
-        if (sensor.name.includes('HUMIDITY')) state += `   - Humidity: ${val?.toFixed?.(1) || val}%\n`;
-        if (sensor.name.includes('PRESSURE')) state += `   - Pressure: ${val?.toFixed?.(1) || val} hPa\n`;
-        if (sensor.name.includes('LIGHT')) state += `   - Light: ${val?.toFixed?.(0) || val} lux ${val > 1000 ? '(bright)' : val < 100 ? '(dim)' : ''}\n`;
-      }
-    }
-    return state;
   }
 }
 

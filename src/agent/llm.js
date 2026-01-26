@@ -107,9 +107,20 @@ class LLMClient {
     });
 
     const content = await this.callLLM(systemPrompt, userPrompt);
-    const result = JSON.parse(content);
+    
+    // Log raw response for debugging
+    log(`📥 AI RAW: ${content}`);
+    
+    let result;
+    try {
+      result = JSON.parse(content);
+    } catch (parseError) {
+      log(`❌ JSON Parse Error: ${parseError.message}`);
+      log(`   Raw content: ${content}`);
+      throw new Error(`Invalid JSON from AI: ${parseError.message}`);
+    }
 
-    // Log response
+    // Log parsed response
     if (result.complete) {
       log(`📥 AI: ✅ TASK COMPLETE - ${result.reason}`);
     } else if (result.stepComplete) {
@@ -140,8 +151,11 @@ class LLMClient {
   buildUserPrompt(task, plan, currentStepIndex, stepActions, lastResult) {
     let prompt = '';
 
-    // Task
-    prompt += `TASK: ${task}\n`;
+    // Only include full TASK on first action of first step (to save tokens)
+    const isFirstAction = currentStepIndex === 0 && stepActions.length === 0;
+    if (isFirstAction) {
+      prompt += `TASK: ${task}\n`;
+    }
 
     // Interactive message if any
     const msg = this.getInteractiveMessage?.();
@@ -155,6 +169,12 @@ class LLMClient {
       const marker = i < currentStepIndex ? '✓' : (i === currentStepIndex ? '▶' : '○');
       prompt += `${marker} ${i + 1}. ${step.description}\n`;
     });
+
+    // CRITICAL: Warning about completed steps
+    if (currentStepIndex > 0) {
+      prompt += `\n⚠️ STEPS 1-${currentStepIndex} marked complete. Do NOT repeat them.\n`;
+      prompt += `BUT: If the element you need to tap is near screen edge (cy<150 or cy>screen_height-200), SCROLL FIRST to center it before tapping!\n`;
+    }
 
     // Current step
     prompt += `\n═══ CURRENT STEP: ${currentStepIndex + 1} of ${plan.steps.length} ═══\n`;
@@ -212,25 +232,32 @@ class LLMClient {
   }
 
   /**
-   * Truncate for logging
+   * Truncate for logging - keep important parts visible
    */
   truncateForLog(text) {
-    if (text.length <= this.maxLogLength) return text;
-
+    // Always show full prompt up to "Full result:" section
     const fullResultIdx = text.indexOf('Full result:');
-    if (fullResultIdx !== -1) {
-      const before = text.substring(0, fullResultIdx + 50);
-      const after = text.substring(text.length - 200);
-      return before + `\n... [${text.length - this.maxLogLength} chars truncated] ...\n` + after;
+    if (fullResultIdx !== -1 && fullResultIdx < this.maxLogLength) {
+      // Show everything before "Full result:" + truncated result
+      const beforeResult = text.substring(0, fullResultIdx + 13); // include "Full result:\n"
+      const resultPart = text.substring(fullResultIdx + 13);
+      
+      if (resultPart.length > 500) {
+        return beforeResult + resultPart.substring(0, 300) + `\n... [${resultPart.length - 500} chars truncated] ...\n` + resultPart.substring(resultPart.length - 200);
+      }
+      return text;
     }
 
+    if (text.length <= this.maxLogLength) return text;
     return text.substring(0, this.maxLogLength) + `\n... [truncated ${text.length - this.maxLogLength} chars]`;
   }
 
   /**
-   * Call LLM API
+   * Call LLM API with retry for rate limits
    */
-  async callLLM(systemPrompt, userPrompt) {
+  async callLLM(systemPrompt, userPrompt, retryCount = 0) {
+    const maxRetries = 3;
+    
     try {
       if (this.provider === 'openai') {
         const response = await this.client.chat.completions.create({
@@ -258,6 +285,18 @@ class LLMClient {
         return response.content[0].text;
       }
     } catch (error) {
+      // Retry on rate limit (429)
+      if (error.status === 429 && retryCount < maxRetries) {
+        // Extract wait time from error message or default to 5 seconds
+        const waitMatch = error.message.match(/try again in (\d+\.?\d*)s/i);
+        const waitTime = waitMatch ? Math.ceil(parseFloat(waitMatch[1]) * 1000) : 5000;
+        
+        log(`⏳ Rate limited. Waiting ${waitTime}ms before retry ${retryCount + 1}/${maxRetries}...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        
+        return this.callLLM(systemPrompt, userPrompt, retryCount + 1);
+      }
+      
       log(`❌ LLM Error: ${error.message}`);
       throw error;
     }

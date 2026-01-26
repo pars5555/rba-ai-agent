@@ -157,7 +157,9 @@ async function runAgent() {
     try {
       decision = await llm.executeStep(task, plan, currentStep, stepActions, lastResult);
     } catch (error) {
-      fatalError = { type: 'llm_error', message: error.message };
+      log(`💀 LLM Error: ${error.message}`);
+      log(`   Stack: ${error.stack}`);
+      fatalError = { type: 'llm_error', message: error.message, stack: error.stack };
       break;
     }
 
@@ -173,6 +175,7 @@ async function runAgent() {
 
     // Speak reason
     if (speak && decision.reason) {
+      log(`🔊 Speaking: "${decision.reason}"`);
       rba.call(sn, 'speak', { text: decision.reason, speed: 1.0 }).catch(() => {});
     }
 
@@ -241,6 +244,7 @@ async function runAgent() {
 
     if (result._fatal) {
       fatalError = result._fatal;
+      log(`💀 Fatal error from RBA: ${JSON.stringify(result._fatal)}`);
       break;
     }
 
@@ -269,6 +273,9 @@ async function runAgent() {
   log(`   Steps: ${currentStep}/${plan.steps.length}`);
   log(`   Actions: ${totalActions}`);
   log(`   Time: ${elapsed()}s`);
+  if (fatalError) {
+    log(`   ❌ Fatal Error: ${JSON.stringify(fatalError)}`);
+  }
   log(`${'═'.repeat(60)}\n`);
 
   emit('task_complete', {

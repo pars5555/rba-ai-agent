@@ -111,6 +111,13 @@ class AgentManager extends EventEmitter {
     const id = taskId.slice(0, 8);
 
     switch (event.type) {
+      case 'log':
+        // Show all logs from worker - this is where user prompts, AI responses, etc. come from
+        console.log(`[${ts}] [${id}] ${event.message}`);
+        break;
+      case 'error':
+        console.log(`[${ts}] [${id}] ❌ ${event.message}`);
+        break;
       case 'task_init':
         console.log(`[${ts}] [${id}] 🤖 Task: "${event.task}"`);
         break;
@@ -142,13 +149,22 @@ class AgentManager extends EventEmitter {
           console.log(`[${ts}] [${id}] ❌ Error: ${event.error}`);
         } else {
           console.log(`[${ts}] [${id}] 🤖 ${event.action}: ${event.reason}`);
+          if (event.params && Object.keys(event.params).length > 0) {
+            console.log(`[${ts}] [${id}]    Params: ${JSON.stringify(event.params)}`);
+          }
         }
+        break;
+      case 'speak':
+        console.log(`[${ts}] [${id}] 🔊 "${event.text}"`);
         break;
       case 'action_result':
         console.log(`[${ts}] [${id}] ${event.success ? '✔' : '✗'} [${event.actionNum}] ${event.action}`);
         break;
       case 'task_complete':
         console.log(`[${ts}] [${id}] 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${event.totalActions} actions, ${event.elapsed}s)`);
+        if (event.fatalError) {
+          console.log(`[${ts}] [${id}]    ❌ Error: ${JSON.stringify(event.fatalError)}`);
+        }
         break;
       case 'timeout':
         console.log(`[${ts}] [${id}] ⏱️ Timeout`);

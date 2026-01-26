@@ -5,6 +5,16 @@ import { WebSocketServer } from 'ws';
 import axios from 'axios';
 import AgentManager from './agentManager.js';
 
+const formatTimestamp = () => new Date().toISOString();
+const withTimestamp = (method) => (...args) => {
+  method(`[${formatTimestamp()}]`, ...args);
+};
+
+console.log = withTimestamp(console.log);
+console.info = withTimestamp(console.info);
+console.warn = withTimestamp(console.warn);
+console.error = withTimestamp(console.error);
+
 // Create axios instance that ignores SSL certificate errors
 const axiosInsecure = axios.create({
   httpsAgent: new https.Agent({ rejectUnauthorized: false })

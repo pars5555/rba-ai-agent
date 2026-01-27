@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'worker_threads';
-import { emit, log, getHumanErrorMessage } from './util.js';
+import { emit, getHumanErrorMessage, updateInstalledAppsFromSnapshot, validateRunAppPackage, createLogger } from './util.js';
 import RBAClient from './rba.js';
 import LLMClient from './llm.js';
 
@@ -13,6 +13,7 @@ import LLMClient from './llm.js';
  */
 
 const { sn, task, taskId, options, config } = workerData;
+const { log } = createLogger('worker.js');
 
 // Debug: Log received options
 console.log(`[worker] Options received:`, JSON.stringify(options));
@@ -65,8 +66,12 @@ async function runAgent() {
     registry: config.registry
   }, getInteractiveMessage);
 
-  const maxActions = options.maxSteps || config.agent?.maxSteps || 100;
-  const maxDuration = (options.maxDurationSeconds || config.agent?.maxDurationSeconds || 300) * 1000;
+  const hasMaxActions = options.maxActions !== undefined || options.maxSteps !== undefined;
+  const hasMaxDuration = options.maxDurationSeconds !== undefined;
+
+  const maxActions = hasMaxActions ? (options.maxActions ?? options.maxSteps) : Infinity;
+  const maxDurationSeconds = hasMaxDuration ? options.maxDurationSeconds : null;
+  const maxDuration = hasMaxDuration ? maxDurationSeconds * 1000 : Infinity;
   const speak = options.speak !== false;
   const hideKeyboard = options.hide_virtual_keyboard !== false;
   const disableStatusBar = options.disable_status_bar === true; // disabled by default
@@ -74,17 +79,25 @@ async function runAgent() {
   emit('task_start', { sn, task, taskId, maxActions, maxDurationMs: maxDuration });
   await rba.reportEvent({ uuid: sn, task_id: taskId, type: 'start', task });
 
-  log(`⚙️ Options: speak=${speak}, hideKeyboard=${hideKeyboard}, disableStatusBar=${disableStatusBar}`);
+  log(`⚙️ Options: speak=${speak}, hideKeyboard=${hideKeyboard}, disableStatusBar=${disableStatusBar}, maxActions=${maxActions}, maxDurationSeconds=${maxDurationSeconds ?? 'none'}`);
+
+  let initialSnapshotResult = null;
+  try {
+    initialSnapshotResult = await rba.call(sn, 'get_device_snapshot', { include_ui_nodes: false });
+  } catch (e) {
+    initialSnapshotResult = { success: false, error: e.message };
+  }
+
+  if (!initialSnapshotResult?.success || !initialSnapshotResult?.snapshot) {
+    log(`💀 Failed to load initial device snapshot: ${initialSnapshotResult?.error || 'Unknown error'}`);
+    emit('fatal', { message: 'Failed to load initial device snapshot' });
+    process.exit(1);
+  }
 
   // Initial setup
-  if (speak) {
-    try {
-      const snap = await rba.call(sn, 'get_device_snapshot', {});
-      if (snap?.snapshot?.is_muted) {
-        log('🔇 Unmuting...');
-        await rba.call(sn, 'volume_mute', { mute: false });
-      }
-    } catch (e) { /* ignore */ }
+  if (speak && initialSnapshotResult.snapshot.is_muted) {
+    log('🔇 Unmuting...');
+    await rba.call(sn, 'volume_mute', { mute: false });
   }
 
   if (hideKeyboard) {
@@ -110,9 +123,7 @@ async function runAgent() {
     if (!plan.steps || plan.steps.length === 0) {
       if (plan.complete) {
         log(`✅ Task complete immediately: ${plan.reason}`);
-        if (speak && plan.reason) {
-          await rba.call(sn, 'speak', { text: plan.reason, speed: 1.0 }).catch(() => {});
-        }
+        speak && plan.reason && rba.call(sn, 'speak', { text: plan.reason, speed: 1.0 }).catch(() => {});
         await cleanup();
         emit('task_complete', { success: true, steps: 0, totalActions: 0, elapsed: elapsed(), reason: 'completed' });
         process.exit(0);
@@ -124,7 +135,7 @@ async function runAgent() {
     if (speak) {
       const speechMsg = `I could not create a plan for this task. ${error.message}`;
       log(`🔊 Speaking error: "${speechMsg}"`);
-      await rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
+      rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
     }
     emit('fatal', { message: `Planning failed: ${error.message}` });
     process.exit(1);
@@ -144,11 +155,15 @@ async function runAgent() {
   log(`🚀 EXECUTION - ${plan.steps.length} steps`);
   log(`${'═'.repeat(60)}`);
 
-  let currentStep = 0;
+  let planCurrentStep = 0;
   let totalActions = 0;
-  let lastResult = null;
+  let lastApiResult = null;
   let completed = false;
   let fatalError = null;
+  const installedAppsState = { installedApps: null };
+
+  updateInstalledAppsFromSnapshot(initialSnapshotResult.snapshot, installedAppsState);
+  lastApiResult = { action: 'get_device_snapshot', params: { include_ui_nodes: false }, ...initialSnapshotResult };
 
   // Track actions for CURRENT step only
   let stepActions = [];
@@ -156,26 +171,26 @@ async function runAgent() {
   // Track expected foreground package (set by AI when working within an app)
   let expectedForegroundPackage = null;
 
-  while (currentStep < plan.steps.length && totalActions < maxActions && !completed && !fatalError) {
+  while (planCurrentStep < plan.steps.length && totalActions < maxActions && !completed && !fatalError) {
     // Timeout check
     if (Date.now() - startTime > maxDuration) {
       log(`⏱️ Timeout after ${elapsed()}s`);
-      emit('timeout', { elapsed: elapsed(), atStep: currentStep });
+      emit('timeout', { elapsed: elapsed(), atStep: planCurrentStep });
       // Note: speech will happen in the cleanup section
       break;
     }
 
     emit('step_start', {
-      step: currentStep,
+      step: planCurrentStep,
       total: plan.steps.length,
-      description: plan.steps[currentStep].description,
+      description: plan.steps[planCurrentStep].description,
       actionsInStep: stepActions.length
     });
 
     // Get AI decision - pass step action history
     let decision;
     try {
-      decision = await llm.executeStep(task, plan, currentStep, stepActions, lastResult);
+      decision = await llm.executeStep(task, plan, planCurrentStep, stepActions, lastApiResult);
     } catch (error) {
       log(`💀 LLM Error: ${error.message}`);
       log(`   Stack: ${error.stack}`);
@@ -185,7 +200,7 @@ async function runAgent() {
     }
 
     emit('ai_decision', {
-      step: currentStep,
+      step: planCurrentStep,
       action: decision.action,
       params: decision.params,
       reason: decision.reason,
@@ -220,36 +235,47 @@ async function runAgent() {
 
     // AI says step can't be done
     if (decision.error) {
-      log(`❌ Step ${currentStep + 1} failed: ${decision.error}`);
-      emit('step_failed', { step: currentStep, error: decision.error, actionsUsed: stepActions.length });
+      log(`❌ Step ${planCurrentStep + 1} failed: ${decision.error}`);
+      emit('step_failed', { step: planCurrentStep, error: decision.error, actionsUsed: stepActions.length });
 
       // Speak step failure
       if (speak) {
-        const speechMsg = `Step ${currentStep + 1} failed: ${decision.error}`;
+        const speechMsg = `Step ${planCurrentStep + 1} failed: ${decision.error}`;
         log(`🔊 Speaking step error: "${speechMsg}"`);
         rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
       }
 
-      // Move to next step
-      currentStep++;
-      stepActions = []; // Reset for new step
-      lastResult = null;
-      continue;
+      fatalError = {
+        type: 'ai_error',
+        message: decision.error
+      };
+      break;
     }
 
     // Step complete - move to next
     if (decision.stepComplete) {
-      log(`✓ Step ${currentStep + 1} complete (${stepActions.length} actions): ${decision.reason || ''}`);
-      emit('step_complete', { step: currentStep, reason: decision.reason, actionsUsed: stepActions.length });
+      log(`✓ Step ${planCurrentStep + 1} complete (${stepActions.length} actions): ${decision.reason || ''}`);
+      emit('step_complete', { step: planCurrentStep, reason: decision.reason, actionsUsed: stepActions.length });
 
-      currentStep++;
+      planCurrentStep++;
       stepActions = []; // Reset for new step
-      lastResult = null;
+      lastApiResult = null;
 
-      if (currentStep >= plan.steps.length) {
+      if (planCurrentStep >= plan.steps.length) {
         completed = true;
       }
       continue;
+    }
+
+    // Validate run_app packages against snapshot
+    if (decision.action === 'run_app') {
+      const validation = validateRunAppPackage(decision.params, installedAppsState.installedApps);
+      if (!validation.ok) {
+        log(`❌ run_app blocked: ${validation.error.message}`);
+        speak && rba.call(sn, 'speak', { text: validation.error.message, speed: 1.0 }).catch(() => {});
+        fatalError = validation.error;
+        break;
+      }
     }
 
     // Execute action
@@ -267,10 +293,10 @@ async function runAgent() {
     });
 
     // Keep full result for next LLM call (contains snapshot data)
-    lastResult = { action: decision.action, params: decision.params, ...result };
+    lastApiResult = { action: decision.action, params: decision.params, ...result };
 
     emit('action_result', {
-      step: currentStep,
+      step: planCurrentStep,
       actionNum: totalActions,
       stepActionNum: stepActions.length,
       action: decision.action,
@@ -302,6 +328,7 @@ async function runAgent() {
     // Verify foreground package after get_device_snapshot
     if (decision.action === 'get_device_snapshot' && result.success && result.snapshot) {
       const actualForeground = result.snapshot.foreground_package;
+      updateInstalledAppsFromSnapshot(result.snapshot, installedAppsState);
       
       // Check if AI expects a specific foreground app
       if (expectedForegroundPackage && actualForeground) {
@@ -310,7 +337,7 @@ async function runAgent() {
           emit('foreground_mismatch', {
             expected: expectedForegroundPackage,
             actual: actualForeground,
-            step: currentStep
+            step: planCurrentStep
           });
           fatalError = {
             type: 'foreground_mismatch',
@@ -336,7 +363,7 @@ async function runAgent() {
       uuid: sn,
       task_id: taskId,
       type: 'process',
-      step: currentStep,
+      step: planCurrentStep,
       action: totalActions,
       payload: { action: decision.action, success: result.success }
     });
@@ -351,9 +378,9 @@ async function runAgent() {
 
   // Speak error/result BEFORE cleanup (while device is still responsive)
   if (speak && !success) {
-    const speechMsg = getHumanErrorMessage(fatalError, reason, currentStep, plan.steps.length);
+    const speechMsg = getHumanErrorMessage(fatalError, reason, planCurrentStep, plan.steps.length);
     log(`🔊 Speaking result: "${speechMsg}"`);
-    await rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
+    rba.call(sn, 'speak', { text: speechMsg, speed: 1.0 }).catch(() => {});
     // Wait a bit for speech to complete
     await new Promise(r => setTimeout(r, 2000));
   }
@@ -362,7 +389,7 @@ async function runAgent() {
 
   log(`\n${'═'.repeat(60)}`);
   log(`🏁 ${success ? 'SUCCESS' : 'FAILED'} - ${reason}`);
-  log(`   Steps: ${currentStep}/${plan.steps.length}`);
+  log(`   Steps: ${planCurrentStep}/${plan.steps.length}`);
   log(`   Actions: ${totalActions}`);
   log(`   Time: ${elapsed()}s`);
   if (fatalError) {
@@ -372,7 +399,7 @@ async function runAgent() {
 
   emit('task_complete', {
     success,
-    completedSteps: currentStep,
+    completedSteps: planCurrentStep,
     totalSteps: plan.steps.length,
     totalActions,
     elapsed: elapsed(),
@@ -384,7 +411,7 @@ async function runAgent() {
     uuid: sn,
     task_id: taskId,
     type: 'done',
-    payload: { success, steps: currentStep, totalActions, reason }
+    payload: { success, steps: planCurrentStep, totalActions, reason }
   });
 
   process.exit(success ? 0 : 1);

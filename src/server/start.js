@@ -311,6 +311,36 @@ app.post('/run', (req, res) => {
     return res.status(503).json({ success: false, error: 'Agent not ready' });
   }
 
+  const hasMaxActions = options.maxActions !== undefined || options.maxSteps !== undefined;
+  const hasMaxDuration = options.maxDurationSeconds !== undefined;
+
+  if (!hasMaxActions && !hasMaxDuration) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing limits: provide maxActions or maxDurationSeconds (or both).'
+    });
+  }
+
+  if (hasMaxActions) {
+    const maxActions = options.maxActions ?? options.maxSteps;
+    if (!Number.isFinite(maxActions) || maxActions <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid maxActions: must be a positive number.'
+      });
+    }
+  }
+
+  if (hasMaxDuration) {
+    const maxDurationSeconds = options.maxDurationSeconds;
+    if (!Number.isFinite(maxDurationSeconds) || maxDurationSeconds <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid maxDurationSeconds: must be a positive number.'
+      });
+    }
+  }
+
   const result = agentManager.startTask(sn, task, options);
   
   if (result.success) {

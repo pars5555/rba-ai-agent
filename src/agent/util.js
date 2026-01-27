@@ -54,16 +54,24 @@ export function logError(message, taskId = null) {
   }
 }
 
-export function logApiCall(action, url, body = null) {
-  emit('api_call', { action, url, bodyLength: body ? JSON.stringify(body).length : 0 });
+export function logApiCall(action, url, body = null, source = null) {
+  emit('api_call', { action, url, bodyLength: body ? JSON.stringify(body).length : 0, source });
 }
 
-export function logApiResponse(action, status, success) {
-  emit('api_response', { action, status, success });
+export function logApiResponse(action, status, success, source = null) {
+  emit('api_response', { action, status, success, source });
 }
 
-export function logApiError(action, status, error) {
-  emit('api_error', { action, status, error });
+export function logApiError(action, status, error, source = null) {
+  emit('api_error', { action, status, error, source });
+}
+
+export function createLogger(source) {
+  const prefix = source ? `[${source}] ` : '';
+  return {
+    log: (message, taskId = null) => log(`${prefix}${message}`, taskId),
+    logError: (message, taskId = null) => logError(`${prefix}${message}`, taskId)
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -96,6 +104,54 @@ export const KNOWN_APPS = {
  */
 export function getAppName(packageName) {
   return KNOWN_APPS[packageName] || packageName;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INSTALLED APPS VALIDATION
+// ═══════════════════════════════════════════════════════════════
+
+export function updateInstalledAppsFromSnapshot(snapshot, state) {
+  if (!state) return;
+  if (snapshot && Array.isArray(snapshot.installed_apps)) {
+    state.installedApps = snapshot.installed_apps;
+  }
+}
+
+export function validateRunAppPackage(params, installedApps) {
+  if (!Array.isArray(installedApps) || installedApps.length === 0) {
+    return {
+      ok: false,
+      error: {
+        type: 'package_list_unavailable',
+        message: 'installed_apps not available in snapshot. Run get_device_snapshot first.'
+      }
+    };
+  }
+
+  const packageName = params?.package_name;
+  if (!packageName) {
+    return {
+      ok: false,
+      error: {
+        type: 'package_not_available',
+        message: 'Package not available on device: (missing package_name)',
+        package: null
+      }
+    };
+  }
+
+  if (!installedApps.includes(packageName)) {
+    return {
+      ok: false,
+      error: {
+        type: 'package_not_available',
+        message: `Package not available on device: ${packageName}`,
+        package: packageName
+      }
+    };
+  }
+
+  return { ok: true };
 }
 
 // ═══════════════════════════════════════════════════════════════

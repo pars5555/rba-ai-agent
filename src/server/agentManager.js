@@ -153,71 +153,85 @@ class AgentManager extends EventEmitter {
   logEvent(taskId, event) {
     const ts = new Date().toISOString().slice(11, 23);
     const id = taskId.slice(0, 8);
+    const source = event.source || 'agentManager.js';
+    const prefix = `[${ts}] [${id}] [${source}]`;
 
     switch (event.type) {
       case 'log':
         // Show all logs from worker - this is where user prompts, AI responses, etc. come from
-        console.log(`[${ts}] [${id}] ${event.message}`);
+        console.log(`${prefix} ${event.message}`);
         break;
       case 'error':
-        console.log(`[${ts}] [${id}] ❌ ${event.message}`);
+        console.log(`${prefix} ❌ ${event.message}`);
         break;
       case 'task_init':
-        console.log(`[${ts}] [${id}] 🤖 Task: "${event.task}"`);
+        console.log(`${prefix} 🤖 Task: "${event.task}"`);
         break;
       case 'task_start':
-        console.log(`[${ts}] [${id}] 🚀 Starting (max ${event.maxActions} actions)`);
+        console.log(`${prefix} 🚀 Starting (max ${event.maxActions} actions)`);
+        break;
+      case 'llm_request':
+        console.log(`${prefix} llm_request: ${JSON.stringify(event)}`);
+        break;
+      case 'api_call':
+        console.log(`${prefix} api_call: ${JSON.stringify(event)}`);
+        break;
+      case 'api_response':
+        console.log(`${prefix} api_response: ${JSON.stringify(event)}`);
+        break;
+      case 'api_error':
+        console.log(`${prefix} api_error: ${JSON.stringify(event)}`);
         break;
       case 'phase':
-        console.log(`[${ts}] [${id}] ${event.phase === 'planning' ? '📋' : '🚀'} ${event.phase.toUpperCase()}`);
+        console.log(`${prefix} ${event.phase === 'planning' ? '📋' : '🚀'} ${event.phase.toUpperCase()}`);
         break;
       case 'plan_created':
-        console.log(`[${ts}] [${id}] 📋 Plan: ${event.stepsCount} steps`);
-        event.steps?.forEach((s, i) => console.log(`[${ts}] [${id}]    ${i + 1}. ${s.description}`));
+        console.log(`${prefix} 📋 Plan: ${event.stepsCount} steps`);
+        event.steps?.forEach((s, i) => console.log(`${prefix}    ${i + 1}. ${s.description}`));
         break;
       case 'step_start':
-        console.log(`[${ts}] [${id}] ── Step ${event.step + 1}/${event.total}: ${event.description} ──`);
+        console.log(`${prefix} ── Step ${event.step + 1}/${event.total}: ${event.description} ──`);
         break;
       case 'step_complete':
-        console.log(`[${ts}] [${id}] ✓ Step ${event.step + 1} complete (${event.actionsUsed} actions)`);
+        console.log(`${prefix} ✓ Step ${event.step + 1} complete (${event.actionsUsed} actions)`);
         break;
       case 'step_failed':
-        console.log(`[${ts}] [${id}] ❌ Step ${event.step + 1} failed: ${event.error}`);
+        console.log(`${prefix} ❌ Step ${event.step + 1} failed: ${event.error}`);
         break;
       case 'ai_decision':
         if (event.complete) {
-          console.log(`[${ts}] [${id}] ✅ COMPLETE: ${event.reason}`);
+          console.log(`${prefix} ✅ COMPLETE: ${event.reason}`);
         } else if (event.stepComplete) {
-          console.log(`[${ts}] [${id}] ✓ Step done: ${event.reason}`);
+          console.log(`${prefix} ✓ Step done: ${event.reason}`);
         } else if (event.error) {
-          console.log(`[${ts}] [${id}] ❌ Error: ${event.error}`);
+          console.log(`${prefix} ❌ Error: ${event.error}`);
         } else {
-          console.log(`[${ts}] [${id}] 🤖 ${event.action}: ${event.reason}`);
+          console.log(`${prefix} 🤖 ${event.action}: ${event.reason}`);
           if (event.params && Object.keys(event.params).length > 0) {
-            console.log(`[${ts}] [${id}]    Params: ${JSON.stringify(event.params)}`);
+            console.log(`${prefix}    Params: ${JSON.stringify(event.params)}`);
           }
         }
         break;
       case 'speak':
-        console.log(`[${ts}] [${id}] 🔊 "${event.text}"`);
+        console.log(`${prefix} 🔊 "${event.text}"`);
         break;
       case 'action_result':
-        console.log(`[${ts}] [${id}] ${event.success ? '✔' : '✗'} [${event.actionNum}] ${event.action}`);
+        console.log(`${prefix} ${event.success ? '✔' : '✗'} [${event.actionNum}] ${event.action}`);
         break;
       case 'task_complete':
-        console.log(`[${ts}] [${id}] 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${event.totalActions} actions, ${event.elapsed}s)`);
+        console.log(`${prefix} 🏁 ${event.success ? 'SUCCESS' : 'FAILED'}: ${event.reason} (${event.totalActions} actions, ${event.elapsed}s)`);
         if (event.fatalError) {
-          console.log(`[${ts}] [${id}]    ❌ Error: ${JSON.stringify(event.fatalError)}`);
+          console.log(`${prefix}    ❌ Error: ${JSON.stringify(event.fatalError)}`);
         }
         break;
       case 'timeout':
-        console.log(`[${ts}] [${id}] ⏱️ Timeout`);
+        console.log(`${prefix} ⏱️ Timeout`);
         break;
       case 'fatal':
-        console.log(`[${ts}] [${id}] 💀 ${event.message}`);
+        console.log(`${prefix} 💀 ${event.message}`);
         break;
       case 'worker_exit':
-        console.log(`[${ts}] [${id}] 👋 Exit ${event.code}`);
+        console.log(`${prefix} 👋 Exit ${event.code}`);
         break;
     }
   }

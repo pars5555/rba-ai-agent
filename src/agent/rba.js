@@ -36,18 +36,18 @@ class RBAClient {
     const body = { uuid: sn, ...params };
 
     try {
-      logApiCall(action, url, body);
+      logApiCall(action, url, body, 'rba.js');
       const response = await axiosInsecure.post(url, body, {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
         timeout: 30000
       });
-      logApiResponse(action, response.status, response.data?.success);
+      logApiResponse(action, response.status, response.data?.success, 'rba.js');
 
       return validateAndEnrichResponse(this.registry, action, response.data);
     } catch (error) {
       const status = error.response?.status;
       const errorMsg = error.response?.data?.message || error.message;
-      logApiError(action, status, errorMsg);
+      logApiError(action, status, errorMsg, 'rba.js');
 
       if (status === 401) return { success: false, error: 'Auth failed', _fatal: { type: 'auth_error', message: 'Invalid API key' } };
       

@@ -58,8 +58,34 @@ export function logApiCall(action, url, body = null, source = null) {
   emit('api_call', { action, url, bodyLength: body ? JSON.stringify(body).length : 0, source });
 }
 
-export function logApiResponse(action, status, success, source = null) {
-  emit('api_response', { action, status, success, source });
+/** Max length for string fields in logged response; longer values are summarized */
+const LOG_RESPONSE_STRING_MAX = 500;
+
+function sanitizeForLog(obj, depth = 0) {
+  if (depth > 5) return '<deep>';
+  if (obj == null) return obj;
+  if (typeof obj === 'string') {
+    return obj.length <= LOG_RESPONSE_STRING_MAX ? obj : `<string ${obj.length} chars>`;
+  }
+  if (Array.isArray(obj)) {
+    return obj.slice(0, 20).map((v) => sanitizeForLog(v, depth + 1));
+  }
+  if (typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      out[k] = sanitizeForLog(v, depth + 1);
+    }
+    return out;
+  }
+  return obj;
+}
+
+export function logApiResponse(action, status, success, source = null, responseData = null) {
+  const payload = { action, status, success, source };
+  if (responseData != null) {
+    payload.response = sanitizeForLog(responseData);
+  }
+  emit('api_response', payload);
 }
 
 export function logApiError(action, status, error, source = null) {
@@ -271,6 +297,10 @@ export function verifyResponse(registry, action, responseData) {
   const cmd = registry?.[action];
   if (!cmd || !cmd.response) {
     return result; // No schema to validate against
+  }
+  // Skip schema validation for error responses; required fields (e.g. data, width, height) only apply when success is true
+  if (responseData && responseData.success === false) {
+    return result;
   }
 
   const checkSchema = (schema, data, path = '') => {

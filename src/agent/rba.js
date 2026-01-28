@@ -56,7 +56,7 @@ class RBAClient {
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
         timeout: 30000
       });
-      logApiResponse(action, response.status, response.data?.success, 'rba.js');
+      logApiResponse(action, response.status, response.data?.success, 'rba.js', response.data);
 
       return validateAndEnrichResponse(this.registry, action, response.data);
     } catch (error) {

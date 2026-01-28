@@ -174,13 +174,20 @@ class AgentManager extends EventEmitter {
         console.log(`${prefix} llm_request: ${JSON.stringify(event)}`);
         break;
       case 'api_call':
-        console.log(`${prefix} api_call: ${JSON.stringify(event)}`);
+        console.log(`${prefix} api_call ${event.action || ''}`);
+        JSON.stringify(event, null, 2).split('\n').forEach((line) => console.log(`${prefix}   ${line}`));
         break;
       case 'api_response':
-        console.log(`${prefix} api_response: ${JSON.stringify(event)}`);
+        console.log(`${prefix} api_response ${event.action || ''} status=${event.status} success=${event.success}`);
+        if (event.response != null) {
+          console.log(`${prefix}   response: ${JSON.stringify(event.response)}`);
+        } else {
+          JSON.stringify(event, null, 2).split('\n').forEach((line) => console.log(`${prefix}   ${line}`));
+        }
         break;
       case 'api_error':
-        console.log(`${prefix} api_error: ${JSON.stringify(event)}`);
+        console.log(`${prefix} api_error ${event.action || ''} status=${event.status}`);
+        console.log(`${prefix}   error: ${event.error}`);
         break;
       case 'phase':
         console.log(`${prefix} ${event.phase === 'planning' ? '📋' : '🚀'} ${event.phase.toUpperCase()}`);

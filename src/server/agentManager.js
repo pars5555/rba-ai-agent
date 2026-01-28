@@ -19,7 +19,7 @@ class AgentManager extends EventEmitter {
     this.taskRetentionMs = options.taskRetentionMs || 60000;
   }
 
-  startTask(sn, task, options = {}) {
+  startTask(sn, task, options = {}, config) {
     const taskId = options.taskId || randomUUID();
 
     for (const [id, info] of this.workers) {
@@ -28,9 +28,12 @@ class AgentManager extends EventEmitter {
       }
     }
 
-    const config = this.getWorkerConfig();
+    const workerConfig = config !== undefined ? config : (this.getWorkerConfig && this.getWorkerConfig());
+    if (!workerConfig || !workerConfig.registry) {
+      return { success: false, error: 'Config required: pass config from buildWorkerConfig(options) to startTask' };
+    }
     const worker = new Worker(this.workerPath, {
-      workerData: { sn, task, taskId, options, config }
+      workerData: { sn, task, taskId, options, config: workerConfig }
     });
 
     const workerInfo = {

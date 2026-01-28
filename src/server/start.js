@@ -43,8 +43,10 @@ const BOOTSTRAP = {
 
 // Loaded configuration (from PHP server)
 let serverConfig = null;  // From /agent/config
-let agentConfig = null;   // Contains: planningPrompt, executionPrompt, registry
 let configLoadedAt = null;
+
+// Per-version agent context (prompts + registry), loaded on demand and cached
+const agentContextCache = new Map();  // version -> { planningPrompt, executionPrompt, registry }
 
 const app = express();
 
@@ -62,13 +64,13 @@ const wss = new WebSocketServer({ server });
 const wsClients = new Map();
 
 /**
- * Load all config from PHP server
+ * Load server config only from PHP server (no getContext at startup).
+ * Agent context (prompts + registry) is loaded per-version on /run via loadAgentContext().
  */
 async function loadAllConfig() {
   console.log(`📋 Loading config from ${BOOTSTRAP.apiUrl}...`);
-  
+
   try {
-    // Step 1: Load main config from /agent/config
     const configResponse = await axiosInsecure.get(`${BOOTSTRAP.apiUrl}/agent/config`, {
       headers: { 'Authorization': `Bearer ${BOOTSTRAP.apiKey}` },
       timeout: 10000
@@ -77,44 +79,12 @@ async function loadAllConfig() {
     if (!configResponse.data?.success || !configResponse.data?.config) {
       throw new Error(configResponse.data?.message || 'Failed to load config');
     }
-    
+
     serverConfig = configResponse.data.config;
+    configLoadedAt = new Date().toISOString();
     console.log(`✅ Server config loaded`);
     console.log(`   LLM: ${serverConfig.llm?.provider} (${serverConfig.llm?.[serverConfig.llm?.provider]?.model})`);
-    console.log(`   Agent version: ${serverConfig.agent?.version}`);
-
-    // Step 2: Load agent config (prompts + registry) from /agent/prompt
-    // The endpoint now returns both planning and execution prompts
-    const version = serverConfig.agent?.version;
-    const promptResponse = await axiosInsecure.get(`${BOOTSTRAP.apiUrl}/agent/getContext?version=${version}`, {
-      headers: { 'Authorization': `Bearer ${BOOTSTRAP.apiKey}` },
-      timeout: 10000
-    });
-
-    if (!promptResponse.data?.success || !promptResponse.data?.registry) {
-      throw new Error(promptResponse.data?.message || 'Failed to load agent prompts/registry');
-    }
-
-    // Support both old format (single prompt) and new format (planning + execution)
-    const responseData = promptResponse.data;
-    
-    if (responseData.planningPrompt && responseData.executionPrompt) {
-      // New format with separate prompts
-      agentConfig = {
-        planningPrompt: responseData.planningPrompt,
-        executionPrompt: responseData.executionPrompt,
-        registry: responseData.registry
-      };
-      console.log(`✅ Agent config loaded (Task Planner mode)`);
-    } else {
-      throw new Error('Invalid prompt format - missing planning/execution prompts');
-    }
-    
-    configLoadedAt = new Date().toISOString();
-    console.log(`   Commands: ${Object.keys(agentConfig.registry).length}`);
-    console.log(`   Planning prompt: ${agentConfig.planningPrompt.length} chars`);
-    console.log(`   Execution prompt: ${agentConfig.executionPrompt.length} chars`);
-    
+    console.log(`   Default agent version: ${serverConfig.agent?.version ?? 'v3'}`);
     return true;
   } catch (error) {
     const msg = error.response?.data?.message || error.message;
@@ -124,20 +94,67 @@ async function loadAllConfig() {
 }
 
 /**
- * Get full config to pass to workers
+ * Load agent context (prompts + registry) for a version. Uses cache; fetches if missing.
+ * @param {string} version - e.g. 'v1', 'v2', 'v3'
+ * @returns {Promise<{ planningPrompt: string, executionPrompt: string, registry: object }>}
  */
-function getWorkerConfig() {
+async function loadAgentContext(version) {
+  const v = version || serverConfig?.agent?.version || 'v3';
+  if (agentContextCache.has(v)) {
+    return agentContextCache.get(v);
+  }
+  const response = await axiosInsecure.get(`${BOOTSTRAP.apiUrl}/agent/getContext?version=${v}`, {
+    headers: { 'Authorization': `Bearer ${BOOTSTRAP.apiKey}` },
+    timeout: 10000
+  });
+  if (!response.data?.success || !response.data?.registry) {
+    throw new Error(response.data?.message || `Failed to load agent context for version ${v}`);
+  }
+  const data = response.data;
+  if (!data.planningPrompt || !data.executionPrompt) {
+    throw new Error(`Invalid prompt format for version ${v} - missing planning/execution prompts`);
+  }
+  const ctx = {
+    planningPrompt: data.planningPrompt,
+    executionPrompt: data.executionPrompt,
+    registry: data.registry
+  };
+  agentContextCache.set(v, ctx);
+  console.log(`   Cached agent context ${v} (${Object.keys(ctx.registry).length} commands)`);
+  return ctx;
+}
+
+/**
+ * Build full worker config from run options. Loads agent context for version if needed.
+ * Merges per-request overrides: version, llmProvider, llmModel.
+ * @param {object} options - from POST /run body (version, llmProvider, llmModel, maxActions, maxDurationSeconds, ...)
+ */
+async function buildWorkerConfig(options = {}) {
+  const version = options.version ?? serverConfig?.agent?.version ?? 'v3';
+  const ctx = await loadAgentContext(version);
+
+  const provider = options.llmProvider ?? serverConfig?.llm?.provider ?? 'openai';
+  const modelOverride = (options.llmModel && options.llmModel.trim()) ? options.llmModel.trim() : null;
+  const openai = {
+    ...serverConfig?.llm?.openai,
+    model: provider === 'openai' && modelOverride ? modelOverride : (serverConfig?.llm?.openai?.model)
+  };
+  const anthropic = {
+    ...serverConfig?.llm?.anthropic,
+    model: provider === 'anthropic' && modelOverride ? modelOverride : (serverConfig?.llm?.anthropic?.model)
+  };
+
   return {
     rba: {
       apiBaseUrl: BOOTSTRAP.apiUrl,
       apiKey: BOOTSTRAP.apiKey
     },
-    llm: serverConfig?.llm,
-    agent: serverConfig?.agent,
-    // Task Planner prompts
-    planningPrompt: agentConfig?.planningPrompt,
-    executionPrompt: agentConfig?.executionPrompt,
-    registry: agentConfig?.registry
+    llm: { provider, openai, anthropic },
+    agent: { version },
+    logging: serverConfig?.logging,
+    planningPrompt: ctx.planningPrompt,
+    executionPrompt: ctx.executionPrompt,
+    registry: ctx.registry
   };
 }
 
@@ -174,7 +191,8 @@ wss.on('connection', (ws, req) => {
   
   ws.send(JSON.stringify({
     method: 'connected',
-    configLoaded: !!agentConfig,
+    configLoaded: !!serverConfig,
+    cachedVersions: [...agentContextCache.keys()],
     tasks: agentManager ? agentManager.getStatus() : [],
     runningCount: agentManager ? agentManager.getRunningCount() : 0
   }));
@@ -251,7 +269,8 @@ function handleWsMessage(ws, msg) {
     case 'get_status':
       ws.send(JSON.stringify({
         method: 'status',
-        configLoaded: !!agentConfig,
+        configLoaded: !!serverConfig,
+        cachedVersions: [...agentContextCache.keys()],
         tasks: agentManager ? agentManager.getStatus(msg.taskId) : [],
         runningCount: agentManager ? agentManager.getRunningCount() : 0
       }));
@@ -271,7 +290,8 @@ function handleWsMessage(ws, msg) {
       // Send updated task list
       ws.send(JSON.stringify({
         method: 'status',
-        configLoaded: !!agentConfig,
+        configLoaded: !!serverConfig,
+        cachedVersions: [...agentContextCache.keys()],
         tasks: agentManager.getStatus(),
         runningCount: agentManager.getRunningCount()
       }));
@@ -296,8 +316,10 @@ app.use((req, res, next) => {
 
 /**
  * POST /run - Start a task
+ * Accepts per-request overrides: version, llmProvider, llmModel,
+ * plus maxActions/maxSteps, maxDurationSeconds, speak, hide_virtual_keyboard, etc.
  */
-app.post('/run', (req, res) => {
+app.post('/run', async (req, res) => {
   const { sn, task, ...options } = req.body;
 
   console.log('[/run] Request body:', JSON.stringify(req.body));
@@ -307,7 +329,7 @@ app.post('/run', (req, res) => {
     return res.status(400).json({ success: false, error: 'Missing sn or task' });
   }
 
-  if (!agentManager || !agentConfig) {
+  if (!agentManager || !serverConfig) {
     return res.status(503).json({ success: false, error: 'Agent not ready' });
   }
 
@@ -341,8 +363,16 @@ app.post('/run', (req, res) => {
     }
   }
 
-  const result = agentManager.startTask(sn, task, options);
-  
+  let config;
+  try {
+    config = await buildWorkerConfig(options);
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message;
+    return res.status(502).json({ success: false, error: `Failed to load agent context: ${msg}` });
+  }
+
+  const result = agentManager.startTask(sn, task, options, config);
+
   if (result.success) {
     res.json({
       success: true,
@@ -434,39 +464,45 @@ app.get('/config', (req, res) => {
     },
     agent: serverConfig.agent,
     logging: serverConfig.logging,
-    commands: agentConfig?.registry ? Object.keys(agentConfig.registry).length : 0,
-    planningPromptLength: agentConfig?.planningPrompt?.length || 0,
-    executionPromptLength: agentConfig?.executionPrompt?.length || 0
+    cachedVersions: [...agentContextCache.keys()],
+    note: 'Prompts/registry are loaded per-run by version; use GET /commands?version=v3 to list commands for a version.'
   });
 });
 
 /**
- * GET /commands - List available commands
+ * GET /commands - List available commands for a version
+ * Query: ?version=v3 (default from serverConfig.agent.version or 'v3')
  */
-app.get('/commands', (req, res) => {
-  if (!agentConfig?.registry) {
-    return res.status(503).json({ success: false, error: 'Registry not loaded' });
+app.get('/commands', async (req, res) => {
+  if (!serverConfig) {
+    return res.status(503).json({ success: false, error: 'Config not loaded' });
   }
-
-  const commands = Object.entries(agentConfig.registry)
+  const version = req.query.version || serverConfig.agent?.version || 'v3';
+  let ctx;
+  try {
+    ctx = await loadAgentContext(version);
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message;
+    return res.status(502).json({ success: false, error: msg });
+  }
+  const commands = Object.entries(ctx.registry)
     .map(([name, cmd]) => ({
       name,
       description: cmd.description,
       parameters: cmd.parameters || {}
     }));
-
-  res.json({ success: true, commands });
+  res.json({ success: true, version, commands });
 });
 
 /**
  * GET /health - Health check
  */
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: agentConfig ? 'ok' : 'not_ready',
-    configLoaded: !!agentConfig,
+  res.json({
+    status: serverConfig ? 'ok' : 'not_ready',
+    configLoaded: !!serverConfig,
     configLoadedAt,
-    commands: agentConfig?.registry ? Object.keys(agentConfig.registry).length : 0,
+    cachedVersions: [...agentContextCache.keys()],
     llm: serverConfig?.llm?.provider,
     wsClients: wsClients.size,
     runningTasks: agentManager ? agentManager.getRunningCount() : 0
@@ -498,12 +534,11 @@ async function start() {
     process.exit(1);
   }
 
-  // Initialize agent manager with getWorkerConfig function
+  // Initialize agent manager. Worker config is built per-run via buildWorkerConfig(options) and passed to startTask().
   agentManager = new AgentManager({
     verbose: serverConfig?.logging?.verbose !== false,
     logApiBody: serverConfig?.logging?.logApiBody || false,
-    maxBodyLogLength: serverConfig?.logging?.maxBodyLogLength || 500,
-    getWorkerConfig
+    maxBodyLogLength: serverConfig?.logging?.maxBodyLogLength || 500
   });
   agentManager.on('event', broadcastEvent);
   console.log('✅ Agent manager initialized (Task Planner mode)');
@@ -514,7 +549,7 @@ async function start() {
     console.log(`   WebSocket:    ws://localhost:${BOOTSTRAP.port}`);
     console.log(`${'═'.repeat(54)}\n`);
     console.log('Endpoints:');
-    console.log('  POST /run     - Start task: { sn, task }');
+    console.log('  POST /run     - Start task: { sn, task, version?, llmProvider?, llmModel?, maxActions?, maxDurationSeconds?, ... }');
     console.log('  POST /stop    - Stop task: { taskId }');
     console.log('  POST /message - Send message: { taskId, content }');
     console.log('  GET  /tasks   - List tasks');

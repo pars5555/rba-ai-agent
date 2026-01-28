@@ -110,24 +110,53 @@ export function getAppName(packageName) {
 // INSTALLED APPS VALIDATION
 // ═══════════════════════════════════════════════════════════════
 
+/** System/default apps: run_app is allowed without checking installed_apps. */
+const SYSTEM_PACKAGES_ALLOWLIST = new Set([
+  'com.android.settings',
+  'com.android.dialer',
+  'com.android.contacts',
+  'com.android.mms',
+  'com.google.android.apps.messaging',
+  'com.android.phone',
+  'com.android.server.telecom',
+  'com.android.documentsui',
+  'com.android.calendar',
+  'com.android.gallery3d',
+  'com.google.android.apps.photos',
+  'com.android.camera',
+  'com.android.camera2',
+  'com.android.vending',
+  'com.google.android.contacts',
+  'com.google.android.dialer',
+  'com.android.launcher',
+  'com.android.launcher3',
+  'com.google.android.apps.nbu.files',
+  'com.android.soundrecorder',
+]);
+
+function isInstalledAppsUsable(val) {
+  if (val == null) return false;
+  if (Array.isArray(val)) return val.length > 0;
+  if (typeof val === 'object' && !Array.isArray(val)) return Object.keys(val).length > 0;
+  return false;
+}
+
+function hasPackage(installedApps, packageName) {
+  if (Array.isArray(installedApps)) return installedApps.includes(packageName);
+  if (installedApps && typeof installedApps === 'object') return Object.prototype.hasOwnProperty.call(installedApps, packageName);
+  return false;
+}
+
 export function updateInstalledAppsFromSnapshot(snapshot, state) {
   if (!state) return;
-  if (snapshot && Array.isArray(snapshot.installed_apps)) {
-    state.installedApps = snapshot.installed_apps;
+  const apps = snapshot?.installed_apps;
+  if (!apps) return;
+  if (Array.isArray(apps) || (typeof apps === 'object' && apps !== null && !Array.isArray(apps))) {
+    state.installedApps = apps;
   }
 }
 
 export function validateRunAppPackage(params, installedApps) {
-  if (!Array.isArray(installedApps) || installedApps.length === 0) {
-    return {
-      ok: false,
-      error: {
-        type: 'package_list_unavailable',
-        message: 'installed_apps not available in snapshot. Run get_device_snapshot first.'
-      }
-    };
-  }
-
   const packageName = params?.package_name;
   if (!packageName) {
     return {
@@ -140,7 +169,21 @@ export function validateRunAppPackage(params, installedApps) {
     };
   }
 
-  if (!installedApps.includes(packageName)) {
+  if (SYSTEM_PACKAGES_ALLOWLIST.has(packageName)) {
+    return { ok: true };
+  }
+
+  if (!isInstalledAppsUsable(installedApps)) {
+    return {
+      ok: false,
+      error: {
+        type: 'package_list_unavailable',
+        message: 'installed_apps not available in snapshot. Run get_device_snapshot first.'
+      }
+    };
+  }
+
+  if (!hasPackage(installedApps, packageName)) {
     return {
       ok: false,
       error: {
@@ -205,6 +248,13 @@ export function getHumanErrorMessage(fatalError, reason, currentStep, totalSteps
 }
 
 // ═══════════════════════════════════════════════════════════════
+// REGISTRY VALIDATION
+// ═══════════════════════════════════════════════════════════════
+
+/** Set to false to disable registry validation (request + response) for debugging. */
+export const REGISTRY_VALIDATION_ENABLED = true;
+
+// ═══════════════════════════════════════════════════════════════
 // RESPONSE VALIDATION
 // ═══════════════════════════════════════════════════════════════
 
@@ -216,35 +266,85 @@ export function getHumanErrorMessage(fatalError, reason, currentStep, totalSteps
  * @returns {{ valid: boolean, missingProperties: string[] }}
  */
 export function verifyResponse(registry, action, responseData) {
-  const result = { valid: true, missingProperties: [] };
+  const result = { valid: true, missingProperties: [], unexpectedProperties: [] };
   
   const cmd = registry?.[action];
   if (!cmd || !cmd.response) {
     return result; // No schema to validate against
   }
 
-  const checkRequired = (schema, data, path = '') => {
+  const checkSchema = (schema, data, path = '') => {
     if (!schema || typeof schema !== 'object') return;
+    const hasDataObject = data && typeof data === 'object';
     
     for (const [key, def] of Object.entries(schema)) {
       const fullPath = path ? `${path}.${key}` : key;
+      const isRequired = def.optional !== true && def.required !== false;
       
-      // Check if this property is required
-      if (def.required === true) {
-        if (data === null || data === undefined || !(key in data)) {
+      if (isRequired) {
+        if (!hasDataObject || !(key in data)) {
           result.missingProperties.push(fullPath);
           result.valid = false;
         }
       }
       
       // Recursively check nested objects (only if data exists and has the key)
-      if (def.type === 'object' && def.properties && data && data[key]) {
-        checkRequired(def.properties, data[key], fullPath);
+      if (def.type === 'object' && def.properties && hasDataObject && data[key]) {
+        checkSchema(def.properties, data[key], fullPath);
+      }
+    }
+
+    // Do not fail on unexpected keys. API often adds metadata (action, code, am.checkout.rbamaster)
+    // and device may return extra fields (e.g. closed_apps). We only enforce missing required.
+  };
+
+  checkSchema(cmd.response, responseData);
+  return result;
+}
+
+/**
+ * Validate request params against registry schema (missing/extra)
+ * @param {object} registry - Command registry
+ * @param {string} action - Action name
+ * @param {object} params - Request params to send
+ * @returns {{ valid: boolean, missingParameters: string[], unexpectedParameters: string[] }}
+ */
+export function validateRequestParams(registry, action, params) {
+  const result = { valid: true, missingParameters: [], unexpectedParameters: [] };
+  const cmd = registry?.[action];
+  if (!cmd || !cmd.parameters) return result;
+
+  const checkParams = (schema, data, path = '') => {
+    if (!schema || typeof schema !== 'object') return;
+    const hasDataObject = data && typeof data === 'object';
+
+    for (const [key, def] of Object.entries(schema)) {
+      const fullPath = path ? `${path}.${key}` : key;
+      const isRequired = def.required === true;
+      const hasDefault = Object.prototype.hasOwnProperty.call(def, 'default');
+      if (isRequired && !hasDefault) {
+        if (!hasDataObject || !(key in data)) {
+          result.missingParameters.push(fullPath);
+          result.valid = false;
+        }
+      }
+      if (def.type === 'object' && def.properties && hasDataObject && data[key]) {
+        checkParams(def.properties, data[key], fullPath);
+      }
+    }
+
+    if (hasDataObject) {
+      for (const key of Object.keys(data)) {
+        if (!schema.hasOwnProperty(key)) {
+          const fullPath = path ? `${path}.${key}` : key;
+          result.unexpectedParameters.push(fullPath);
+          result.valid = false;
+        }
       }
     }
   };
 
-  checkRequired(cmd.response, responseData);
+  checkParams(cmd.parameters, params);
   return result;
 }
 
@@ -291,17 +391,18 @@ export function validateAndEnrichResponse(registry, action, responseData) {
     return { ...responseData, _fatal: fatal };
   }
 
-  // Verify response matches registry schema
-  const validation = verifyResponse(registry, action, responseData);
-  if (validation.missingProperties.length > 0) {
-    return {
-      ...responseData,
-      _responseValidationError: {
-        action,
-        missingProperties: validation.missingProperties,
-        message: `Response missing required properties: ${validation.missingProperties.join(', ')}`
-      }
-    };
+  if (REGISTRY_VALIDATION_ENABLED) {
+    const validation = verifyResponse(registry, action, responseData);
+    if (validation.missingProperties.length > 0) {
+      return {
+        ...responseData,
+        _responseValidationError: {
+          action,
+          missingProperties: validation.missingProperties,
+          message: `Response missing required properties: ${validation.missingProperties.join(', ')}`
+        }
+      };
+    }
   }
 
   return responseData;

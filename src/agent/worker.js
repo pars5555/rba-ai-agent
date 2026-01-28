@@ -89,8 +89,20 @@ async function runAgent() {
   }
 
   if (!initialSnapshotResult?.success || !initialSnapshotResult?.snapshot) {
-    log(`💀 Failed to load initial device snapshot: ${initialSnapshotResult?.error || 'Unknown error'}`);
-    emit('fatal', { message: 'Failed to load initial device snapshot' });
+    const missingParams = initialSnapshotResult?._requestValidationError?.missingParameters || [];
+    const unexpectedParams = initialSnapshotResult?._requestValidationError?.unexpectedParameters || [];
+    const paramDetails = [
+      missingParams.length ? `missing: ${missingParams.join(', ')}` : '',
+      unexpectedParams.length ? `unexpected: ${unexpectedParams.join(', ')}` : ''
+    ].filter(Boolean).join(' | ');
+    const errorDetail = initialSnapshotResult?.error || 'Unknown error';
+    log(`💀 Failed to load initial device snapshot: ${errorDetail}${paramDetails ? ` (${paramDetails})` : ''}`);
+    emit('fatal', {
+      message: 'Failed to load initial device snapshot',
+      error: errorDetail,
+      missingParameters: missingParams,
+      unexpectedParameters: unexpectedParams
+    });
     process.exit(1);
   }
 

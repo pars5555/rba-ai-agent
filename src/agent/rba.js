@@ -1,6 +1,6 @@
 import axios from 'axios';
 import https from 'https';
-import { logApiCall, logApiResponse, logApiError, validateAndEnrichResponse, checkFatalError } from './util.js';
+import { logApiCall, logApiResponse, logApiError, validateAndEnrichResponse, checkFatalError, validateRequestParams, REGISTRY_VALIDATION_ENABLED } from './util.js';
 
 const axiosInsecure = axios.create({
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
@@ -31,6 +31,21 @@ class RBAClient {
     const cmd = this.registry?.[action];
     if (!cmd) return { success: false, error: `Unknown action: ${action}` };
     if (!cmd.endpoint) return { success: false, error: `No endpoint for: ${action}` };
+
+    if (REGISTRY_VALIDATION_ENABLED) {
+      const requestValidation = validateRequestParams(this.registry, action, params);
+      if (!requestValidation.valid) {
+        return {
+          success: false,
+          error: `Invalid parameters for ${action}`,
+          _requestValidationError: {
+            action,
+            missingParameters: requestValidation.missingParameters,
+            unexpectedParameters: requestValidation.unexpectedParameters
+          }
+        };
+      }
+    }
 
     const url = `${this.baseURL}${cmd.endpoint}`;
     const body = { uuid: sn, ...params };

@@ -4,6 +4,7 @@ import https from 'https';
 import { WebSocketServer } from 'ws';
 import axios from 'axios';
 import AgentManager from './agentManager.js';
+import { buildUserPrompt, estimateTokens } from '../agent/util.js';
 
 const formatTimestamp = () => new Date().toISOString();
 const withTimestamp = (method) => (...args) => {
@@ -495,6 +496,51 @@ app.get('/commands', async (req, res) => {
 });
 
 /**
+ * GET /builtPrompt - Built execution & planning prompts (system + user) using real buildUserPrompt
+ * Query: ?version=v3 (default from serverConfig.agent.version or 'v3')
+ * Returns full prompts with fake task/plan so UI shows exactly what is sent to the LLM.
+ */
+app.get('/builtPrompt', async (req, res) => {
+  const version = req.query.version || serverConfig?.agent?.version || 'v3';
+  let ctx;
+  try {
+    ctx = await loadAgentContext(version);
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message;
+    return res.status(502).json({ success: false, message: msg });
+  }
+
+  const task = 'Open Settings and turn on Wi-Fi';
+  const plan = {
+    steps: [
+      { description: '[Step 1 from planner]', verifyBy: '[criteria]' },
+      { description: '[Step 2 from planner]', verifyBy: '[criteria]' }
+    ]
+  };
+  const currentStepIndex = 0;
+  const stepActions = [];
+  const lastResult = {"action": "volume_mute","am.checkout.rbamaster": "14.1","success": true,"code": 200};
+
+  const interactiveMessage = "User Interactive message...";
+
+  // Use exported buildUserPrompt from util.js (same as execution phase in llm.js)
+  const executionUser = buildUserPrompt({ task, plan, currentStepIndex, stepActions, lastResult, interactiveMessage });
+  const planningUser = `TASK: ${task}\n\nCreate a step-by-step plan. Respond with JSON only.`;
+
+  const fullExecutionPrompt = ctx.executionPrompt + '\n\n--- USER MESSAGE ---\n\n' + executionUser;
+  const fullPlanningPrompt = ctx.planningPrompt + '\n\n--- USER MESSAGE ---\n\n' + planningUser;
+
+  res.json({
+    success: true,
+    version,
+    fullExecutionPrompt,
+    fullPlanningPrompt,
+    executionTokens: estimateTokens(fullExecutionPrompt),
+    planningTokens: estimateTokens(fullPlanningPrompt)
+  });
+});
+
+/**
  * GET /health - Health check
  */
 app.get('/health', (req, res) => {
@@ -549,11 +595,12 @@ async function start() {
     console.log(`   WebSocket:    ws://localhost:${BOOTSTRAP.port}`);
     console.log(`${'═'.repeat(54)}\n`);
     console.log('Endpoints:');
-    console.log('  POST /run     - Start task: { sn, task, version?, llmProvider?, llmModel?, maxActions?, maxDurationSeconds?, ... }');
-    console.log('  POST /stop    - Stop task: { taskId }');
-    console.log('  POST /message - Send message: { taskId, content }');
-    console.log('  GET  /tasks   - List tasks');
-    console.log('  GET  /health  - Health check\n');
+    console.log('  POST /run        - Start task: { sn, task, version?, llmProvider?, llmModel?, maxActions?, maxDurationSeconds?, ... }');
+    console.log('  POST /stop       - Stop task: { taskId }');
+    console.log('  POST /message    - Send message: { taskId, content }');
+    console.log('  GET  /tasks      - List tasks');
+    console.log('  GET  /builtPrompt - Built prompts (system+user) for UI: ?version=v3');
+    console.log('  GET  /health     - Health check\n');
     console.log('Task Planner Flow:');
     console.log('  1. 📋 Planning Phase - Create execution plan');
     console.log('  2. 🚀 Execution Phase - Execute steps with progress tracking\n');

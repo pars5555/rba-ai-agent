@@ -15,7 +15,8 @@ class LLMClient {
 
     const provider = config.llm.provider;
     this.provider = provider;
-    
+    this.temperature = config.llm.temperature;
+
     if (provider === 'openai') {
       this.client = new OpenAI({ apiKey: config.llm.openai.apiKey });
       this.model = config.llm.openai.model;
@@ -39,9 +40,9 @@ class LLMClient {
 
     const content = await callLLMWithRetry({
       provider: this.provider, client: this.client, model: this.model,
-      systemPrompt, userPrompt
+      systemPrompt, userPrompt, temperature: this.temperature
     });
-    
+
     const plan = JSON.parse(content);
     this.log(`📥 PLAN: ${plan.steps?.length || 0} steps`);
     plan.steps?.forEach((s, i) => this.log(`   ${i + 1}. ${s.description}`));
@@ -69,9 +70,9 @@ class LLMClient {
 
     const content = await callLLMWithRetry({
       provider: this.provider, client: this.client, model: this.model,
-      systemPrompt, userPrompt
+      systemPrompt, userPrompt, temperature: this.temperature
     });
-    
+
     this.log(`📥 AI RAW: ${content}`);
     
     let result;

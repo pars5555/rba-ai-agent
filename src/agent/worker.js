@@ -179,9 +179,6 @@ async function runAgent() {
 
   // Track actions for CURRENT step only
   let stepActions = [];
-  
-  // Track expected foreground package (set by AI when working within an app)
-  let expectedForegroundPackage = null;
 
   while (planCurrentStep < plan.steps.length && totalActions < maxActions && !completed && !fatalError) {
     // Timeout check
@@ -218,19 +215,8 @@ async function runAgent() {
       reason: decision.reason,
       stepComplete: decision.stepComplete,
       complete: decision.complete,
-      error: decision.error,
-      expectedForegroundPackage: decision.expectedForegroundPackage
+      error: decision.error
     });
-
-    // Update expected foreground package if AI specified one
-    if (decision.expectedForegroundPackage) {
-      expectedForegroundPackage = decision.expectedForegroundPackage;
-      log(`📦 Expected foreground: ${expectedForegroundPackage}`);
-    } else if (decision.expectedForegroundPackage === null) {
-      // AI explicitly cleared the expectation (task no longer requires specific app)
-      expectedForegroundPackage = null;
-      log(`📦 Cleared foreground expectation`);
-    }
 
     // Speak reason
     if (speak && decision.reason) {
@@ -337,31 +323,8 @@ async function runAgent() {
       break;
     }
 
-    // Verify foreground package after get_device_snapshot
     if (decision.action === 'get_device_snapshot' && result.success && result.snapshot) {
-      const actualForeground = result.snapshot.foreground_package;
       updateInstalledAppsFromSnapshot(result.snapshot, installedAppsState);
-      
-      // Check if AI expects a specific foreground app
-      if (expectedForegroundPackage && actualForeground) {
-        if (actualForeground !== expectedForegroundPackage) {
-          log(`❌ Foreground mismatch! Expected: ${expectedForegroundPackage}, Actual: ${actualForeground}`);
-          emit('foreground_mismatch', {
-            expected: expectedForegroundPackage,
-            actual: actualForeground,
-            step: planCurrentStep
-          });
-          fatalError = {
-            type: 'foreground_mismatch',
-            message: `Expected app ${expectedForegroundPackage} but found ${actualForeground}. App may have crashed, closed, or focus was lost.`,
-            expected: expectedForegroundPackage,
-            actual: actualForeground
-          };
-          break;
-        } else {
-          log(`✓ Foreground verified: ${actualForeground}`);
-        }
-      }
     }
 
     if (result._fatal) {

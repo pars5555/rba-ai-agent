@@ -238,9 +238,6 @@ export function validateRunAppPackage(params, installedApps) {
 export function getHumanErrorMessage(fatalError, reason, currentStep, totalSteps) {
   if (fatalError) {
     switch (fatalError.type) {
-      case 'foreground_mismatch':
-        return `I had to stop because the app I was working in is no longer open. I expected to be in ${getAppName(fatalError.expected)} but found ${getAppName(fatalError.actual)} instead. The app may have crashed or been closed.`;
-      
       case 'response_validation_error':
         return `I had to stop because the device gave an unexpected response. Some required data was missing: ${fatalError.missingProperties?.join(', ') || 'unknown properties'}.`;
       
@@ -450,22 +447,26 @@ export function validateAndEnrichResponse(registry, action, responseData) {
  * @param {string} options.model - Model name
  * @param {string} options.systemPrompt - System prompt
  * @param {string} options.userPrompt - User prompt
+ * @param {number} [options.temperature] - Optional; omit to use API default (some models only support default 1)
  * @param {number} options.retryCount - Current retry count (default 0)
  * @param {number} options.maxRetries - Max retries (default 3)
  * @returns {Promise<string>} LLM response content
  */
-export async function callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, retryCount = 0, maxRetries = 3 }) {
+export async function callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, temperature, retryCount = 0, maxRetries = 3 }) {
   try {
     if (provider === 'openai') {
-      const response = await client.chat.completions.create({
+      const body = {
         model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        temperature: 0.2,
         response_format: { type: 'json_object' }
-      });
+      };
+      if (temperature !== undefined && temperature !== null && Number.isFinite(Number(temperature))) {
+        body.temperature = Number(temperature);
+      }
+      const response = await client.chat.completions.create(body);
 
       if (response.usage) {
         log(`📊 Actual tokens - Prompt: ${response.usage.prompt_tokens}, Completion: ${response.usage.completion_tokens}, Total: ${response.usage.total_tokens}`);
@@ -473,12 +474,16 @@ export async function callLLMWithRetry({ provider, client, model, systemPrompt, 
 
       return response.choices[0].message.content;
     } else {
-      const response = await client.messages.create({
+      const body = {
         model,
         max_tokens: 1024,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }]
-      });
+      };
+      if (temperature !== undefined && temperature !== null && Number.isFinite(Number(temperature))) {
+        body.temperature = Number(temperature);
+      }
+      const response = await client.messages.create(body);
       return response.content[0].text;
     }
   } catch (error) {
@@ -486,13 +491,13 @@ export async function callLLMWithRetry({ provider, client, model, systemPrompt, 
     if (error.status === 429 && retryCount < maxRetries) {
       const waitMatch = error.message.match(/try again in (\d+\.?\d*)s/i);
       const waitTime = waitMatch ? Math.ceil(parseFloat(waitMatch[1]) * 1000) : 5000;
-      
+
       log(`⏳ Rate limited. Waiting ${waitTime}ms before retry ${retryCount + 1}/${maxRetries}...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
-      
-      return callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, retryCount: retryCount + 1, maxRetries });
+
+      return callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, temperature, retryCount: retryCount + 1, maxRetries });
     }
-    
+
     log(`❌ LLM Error: ${error.message}`);
     throw error;
   }

@@ -1,20 +1,18 @@
 import express from 'express';
 import http from 'http';
 import https from 'https';
+import { inspect } from 'util';
 import { WebSocketServer } from 'ws';
 import axios from 'axios';
 import AgentManager from './agentManager.js';
 import { buildUserPrompt, estimateTokens } from '../agent/util.js';
 
 const formatTimestamp = () => new Date().toISOString();
-const withTimestamp = (method) => (...args) => {
-  method(`[${formatTimestamp()}]`, ...args);
-};
+const formatArgs = (args) =>
+  args.map((a) => (typeof a === 'object' && a !== null ? inspect(a, { depth: 3, breakLength: 120 }) : String(a))).join(' ');
 
-console.log = withTimestamp(console.log);
-console.info = withTimestamp(console.info);
-console.warn = withTimestamp(console.warn);
-console.error = withTimestamp(console.error);
+const _rawLog = console.log.bind(console);
+const _rawError = console.error.bind(console);
 
 // Create axios instance that ignores SSL certificate errors
 const axiosInsecure = axios.create({
@@ -63,6 +61,48 @@ const wss = new WebSocketServer({ server });
 
 // Track WebSocket clients
 const wsClients = new Map();
+
+// Server log ring buffer (stdout/stderr) for WS streaming; max 5000 lines
+const SERVER_LOG_MAX = 5000;
+const serverLogBuffer = [];
+
+function broadcastServerLog(line, stream) {
+  const msg = JSON.stringify({ method: 'server_log', line, stream });
+  for (const [ws] of wsClients) {
+    if (ws.readyState !== 1) continue;
+    try {
+      ws.send(msg);
+    } catch (e) {
+      _rawError('WebSocket server_log send error: ' + e.message);
+    }
+  }
+}
+
+function serverLogPush(line, stream) {
+  serverLogBuffer.push({ line, stream });
+  if (serverLogBuffer.length > SERVER_LOG_MAX) serverLogBuffer.splice(0, serverLogBuffer.length - SERVER_LOG_MAX);
+  broadcastServerLog(line, stream);
+}
+
+function wrapConsole() {
+  console.log = (...args) => {
+    const line = '[' + formatTimestamp() + '] ' + formatArgs(args);
+    _rawLog(line);
+    serverLogPush(line, 'stdout');
+  };
+  console.info = (...args) => { console.log(...args); };
+  console.warn = (...args) => {
+    const line = '[' + formatTimestamp() + '] ' + formatArgs(args);
+    _rawError(line);
+    serverLogPush(line, 'stderr');
+  };
+  console.error = (...args) => {
+    const line = '[' + formatTimestamp() + '] ' + formatArgs(args);
+    _rawError(line);
+    serverLogPush(line, 'stderr');
+  };
+}
+wrapConsole();
 
 /**
  * Load server config only from PHP server (no getContext at startup).
@@ -127,8 +167,8 @@ async function loadAgentContext(version) {
 
 /**
  * Build full worker config from run options. Loads agent context for version if needed.
- * Merges per-request overrides: version, llmProvider, llmModel.
- * @param {object} options - from POST /run body (version, llmProvider, llmModel, maxActions, maxDurationSeconds, ...)
+ * Merges per-request overrides: version, llmProvider, llmModel, temperature.
+ * @param {object} options - from POST /run body (version, llmProvider, llmModel, temperature, maxActions, maxDurationSeconds, ...)
  */
 async function buildWorkerConfig(options = {}) {
   const version = options.version ?? serverConfig?.agent?.version ?? 'v3';
@@ -136,21 +176,37 @@ async function buildWorkerConfig(options = {}) {
 
   const provider = options.llmProvider ?? serverConfig?.llm?.provider ?? 'openai';
   const modelOverride = (options.llmModel && options.llmModel.trim()) ? options.llmModel.trim() : null;
+  const openaiDef = serverConfig?.llm?.openai ?? {};
+  const openaiModels = openaiDef.models;
+  const openaiDefault = openaiDef.model ?? (Array.isArray(openaiModels) && openaiModels[0])
+    ?? (openaiModels && typeof openaiModels === 'object' && Object.keys(openaiModels)[0]);
+  const openaiModel = provider === 'openai' && modelOverride ? modelOverride : openaiDefault ?? null;
+  const anthropicDef = serverConfig?.llm?.anthropic ?? {};
+  const anthropicModels = anthropicDef.models;
+  const anthropicDefault = anthropicDef.model ?? (Array.isArray(anthropicModels) && anthropicModels[0])
+    ?? (anthropicModels && typeof anthropicModels === 'object' && Object.keys(anthropicModels)[0]);
+  const anthropicModel = provider === 'anthropic' && modelOverride ? modelOverride : anthropicDefault ?? null;
   const openai = {
-    ...serverConfig?.llm?.openai,
-    model: provider === 'openai' && modelOverride ? modelOverride : (serverConfig?.llm?.openai?.model)
+    ...openaiDef,
+    model: openaiModel
   };
   const anthropic = {
-    ...serverConfig?.llm?.anthropic,
-    model: provider === 'anthropic' && modelOverride ? modelOverride : (serverConfig?.llm?.anthropic?.model)
+    ...anthropicDef,
+    model: anthropicModel
   };
+
+  let temperature = undefined;
+  if (options.temperature !== undefined && options.temperature !== null && options.temperature !== '') {
+    const t = Number(options.temperature);
+    if (Number.isFinite(t)) temperature = t;
+  }
 
   return {
     rba: {
       apiBaseUrl: BOOTSTRAP.apiUrl,
       apiKey: BOOTSTRAP.apiKey
     },
-    llm: { provider, openai, anthropic },
+    llm: { provider, openai, anthropic, temperature },
     agent: { version },
     logging: serverConfig?.logging,
     planningPrompt: ctx.planningPrompt,
@@ -243,6 +299,13 @@ function handleWsMessage(ws, msg) {
       client.subscriptions.add('*');
       ws.send(JSON.stringify({ method: 'subscribed', taskId: '*' }));
       break;
+
+    case 'get_recent_logs': {
+      const n = Math.min(Math.max(parseInt(msg.lines, 10) || 500, 1), SERVER_LOG_MAX);
+      const lines = serverLogBuffer.slice(-n);
+      ws.send(JSON.stringify({ method: 'recent_logs', lines }));
+      break;
+    }
       
     case 'unsubscribe_all':
       client.subscriptions.delete('*');
@@ -317,7 +380,7 @@ app.use((req, res, next) => {
 
 /**
  * POST /run - Start a task
- * Accepts per-request overrides: version, llmProvider, llmModel,
+ * Accepts per-request overrides: version, llmProvider, llmModel, temperature,
  * plus maxActions/maxSteps, maxDurationSeconds, speak, hide_virtual_keyboard, etc.
  */
 app.post('/run', async (req, res) => {
@@ -595,7 +658,7 @@ async function start() {
     console.log(`   WebSocket:    ws://localhost:${BOOTSTRAP.port}`);
     console.log(`${'═'.repeat(54)}\n`);
     console.log('Endpoints:');
-    console.log('  POST /run        - Start task: { sn, task, version?, llmProvider?, llmModel?, maxActions?, maxDurationSeconds?, ... }');
+    console.log('  POST /run        - Start task: { sn, task, version?, llmProvider?, llmModel?, temperature?, maxActions?, maxDurationSeconds?, ... }');
     console.log('  POST /stop       - Stop task: { taskId }');
     console.log('  POST /message    - Send message: { taskId, content }');
     console.log('  GET  /tasks      - List tasks');

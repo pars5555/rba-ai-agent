@@ -16,10 +16,6 @@ class RBAClient {
     this.registry = registry;
   }
 
-  setRegistry(registry) {
-    this.registry = registry;
-  }
-
   async call(sn, action, params = {}) {
     // Local wait action
     if (action === 'wait') {

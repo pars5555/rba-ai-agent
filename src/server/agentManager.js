@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
+import {truncateForLog} from "../agent/util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,7 +21,7 @@ class AgentManager extends EventEmitter {
   }
 
   startTask(sn, task, options = {}, config) {
-    const taskId = options.taskId || randomUUID();
+    const taskId = options.taskId ?? randomUUID();
 
     for (const [id, info] of this.workers) {
       if (info.sn === sn && info.status === 'running') {
@@ -183,7 +184,7 @@ class AgentManager extends EventEmitter {
       case 'api_response':
         console.log(`${prefix} api_response ${event.action || ''} status=${event.status} success=${event.success}`);
         if (event.response != null) {
-          console.log(`${prefix}   response: ${JSON.stringify(event.response)}`);
+          console.log(`${prefix}   response: ${truncateForLog(JSON.stringify(event.response), this.maxLogLength)}`);
         } else {
           JSON.stringify(event, null, 2).split('\n').forEach((line) => console.log(`${prefix}   ${line}`));
         }

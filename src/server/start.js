@@ -201,6 +201,9 @@ async function buildWorkerConfig(options = {}) {
     if (Number.isFinite(t)) temperature = t;
   }
 
+  const logLevel = options.log_level ?? serverConfig?.logging?.log_level ?? 'info';
+  const maxBodyLogLength = options.maxBodyLogLength ?? serverConfig?.logging?.maxBodyLogLength ?? 500;
+
   return {
     rba: {
       apiBaseUrl: BOOTSTRAP.apiUrl,
@@ -208,7 +211,7 @@ async function buildWorkerConfig(options = {}) {
     },
     llm: { provider, openai, anthropic, temperature },
     agent: { version },
-    logging: serverConfig?.logging,
+    logging: { log_level: logLevel, maxBodyLogLength },
     planningPrompt: ctx.planningPrompt,
     executionPrompt: ctx.executionPrompt,
     registry: ctx.registry
@@ -391,6 +394,10 @@ app.post('/run', async (req, res) => {
 
   if (!sn || !task) {
     return res.status(400).json({ success: false, error: 'Missing sn or task' });
+  }
+
+  if (!options.taskId) {
+    return res.status(400).json({ success: false, error: 'Missing taskId. The server must provide taskId (task_slug) in the run request.' });
   }
 
   if (!agentManager || !serverConfig) {
@@ -643,12 +650,8 @@ async function start() {
     process.exit(1);
   }
 
-  // Initialize agent manager. Worker config is built per-run via buildWorkerConfig(options) and passed to startTask().
-  agentManager = new AgentManager({
-    verbose: serverConfig?.logging?.verbose !== false,
-    logApiBody: serverConfig?.logging?.logApiBody || false,
-    maxBodyLogLength: serverConfig?.logging?.maxBodyLogLength || 500
-  });
+  // Initialize agent manager. Logging (log_level, maxBodyLogLength) is per-run via buildWorkerConfig(options).
+  agentManager = new AgentManager({});
   agentManager.on('event', broadcastEvent);
   console.log('✅ Agent manager initialized (Task Planner mode)');
 

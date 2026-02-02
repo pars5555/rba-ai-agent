@@ -9,13 +9,47 @@
 import { parentPort, isMainThread } from 'worker_threads';
 
 // ═══════════════════════════════════════════════════════════════
-// LOGGING
+// LOGGING (level-based: verbose, debug, info, warning, error, fatal)
 // ═══════════════════════════════════════════════════════════════
 
+const LOG_LEVELS = { verbose: 0, debug: 1, info: 2, warning: 3, error: 4, fatal: 5 };
+const DEFAULT_LOG_LEVEL = 'info';
+const DEFAULT_MAX_BODY_LOG_LENGTH = 500;
+
 let eventCallback = null;
+let loggingConfig = null;
 
 export function setLogCallback(callback) {
   eventCallback = callback;
+}
+
+/** Set per-task logging config (called by worker at start). */
+export function setLoggingConfig(cfg) {
+  loggingConfig = cfg && typeof cfg === 'object' ? cfg : null;
+}
+
+export function getLoggingConfig() {
+  if (loggingConfig) return loggingConfig;
+  return { log_level: DEFAULT_LOG_LEVEL, maxBodyLogLength: DEFAULT_MAX_BODY_LOG_LENGTH };
+}
+
+function getLevelNum(level) {
+  const n = LOG_LEVELS[String(level).toLowerCase()];
+  return n !== undefined ? n : LOG_LEVELS.info;
+}
+
+function shouldLog(messageLevel) {
+  const cfg = getLoggingConfig();
+  const threshold = getLevelNum(cfg.log_level);
+  return getLevelNum(messageLevel) >= threshold;
+}
+
+function truncateMessage(msg, maxLen) {
+  const cfg = getLoggingConfig();
+  const limit = typeof cfg.maxBodyLogLength === 'number' && cfg.maxBodyLogLength > 0 ? cfg.maxBodyLogLength : DEFAULT_MAX_BODY_LOG_LENGTH;
+  const s = String(msg);
+  if (s.length <= limit) return s;
+  return s.substring(0, limit) + ` ... [truncated ${s.length - limit} chars]`;
 }
 
 export function emit(type, data = {}) {
@@ -28,62 +62,81 @@ export function emit(type, data = {}) {
   }
 }
 
-export function log(message, taskId = null) {
+/**
+ * Log a message. Level defaults to 'info'. Only emits if message level >= config log_level.
+ * Message is truncated to maxBodyLogLength.
+ */
+export function log(message, taskId = null, level = 'info') {
+  if (!shouldLog(level)) return;
+  const truncated = truncateMessage(message);
   if (!isMainThread && parentPort) {
-    emit('log', { message });
+    emit('log', { message: truncated });
   } else {
     const ts = new Date().toISOString().slice(11, 23);
     const prefix = taskId ? `[${ts}] [${taskId.slice(0, 8)}]` : `[${ts}]`;
-    console.log(`${prefix} ${message}`);
+    console.log(`${prefix} ${truncated}`);
     if (eventCallback) {
-      eventCallback({ type: 'log', timestamp: Date.now(), message, taskId });
+      eventCallback({ type: 'log', timestamp: Date.now(), message: truncated, taskId });
     }
   }
 }
 
-export function logError(message, taskId = null) {
+/**
+ * Log an error. Level defaults to 'error'. Only emits if message level >= config log_level.
+ */
+export function logError(message, taskId = null, level = 'error') {
+  if (!shouldLog(level)) return;
+  const truncated = truncateMessage(message);
   if (!isMainThread && parentPort) {
-    emit('error', { message });
+    emit('error', { message: truncated });
   } else {
     const ts = new Date().toISOString().slice(11, 23);
     const prefix = taskId ? `[${ts}] [${taskId.slice(0, 8)}]` : `[${ts}]`;
-    console.error(`${prefix} ❌ ${message}`);
+    console.error(`${prefix} ❌ ${truncated}`);
     if (eventCallback) {
-      eventCallback({ type: 'error', timestamp: Date.now(), message, taskId });
+      eventCallback({ type: 'error', timestamp: Date.now(), message: truncated, taskId });
     }
   }
 }
 
+/** Emit api_call. When log_level is not 'verbose', body is omitted (only bodyLength). */
 export function logApiCall(action, url, body = null, source = null) {
-  emit('api_call', { action, url, bodyLength: body ? JSON.stringify(body).length : 0, source });
+  const payload = { action, url, bodyLength: body ? JSON.stringify(body).length : 0, source };
+  if (shouldLog('verbose') && body != null) {
+    const cfg = getLoggingConfig();
+    const maxLen = typeof cfg.maxBodyLogLength === 'number' ? cfg.maxBodyLogLength : DEFAULT_MAX_BODY_LOG_LENGTH;
+    payload.body = typeof body === 'string' ? (body.length <= maxLen ? body : body.substring(0, maxLen) + ' ...') : body;
+  }
+  emit('api_call', payload);
 }
 
-/** Max length for string fields in logged response; longer values are summarized */
-const LOG_RESPONSE_STRING_MAX = 500;
-
-function sanitizeForLog(obj, depth = 0) {
+function sanitizeForLog(obj, maxStringLen, depth = 0) {
   if (depth > 5) return '<deep>';
   if (obj == null) return obj;
+  const maxLen = typeof maxStringLen === 'number' && maxStringLen > 0 ? maxStringLen : 500;
   if (typeof obj === 'string') {
-    return obj.length <= LOG_RESPONSE_STRING_MAX ? obj : `<string ${obj.length} chars>`;
+    return obj.length <= maxLen ? obj : `<string ${obj.length} chars>`;
   }
   if (Array.isArray(obj)) {
-    return obj.slice(0, 20).map((v) => sanitizeForLog(v, depth + 1));
+    return obj.slice(0, 20).map((v) => sanitizeForLog(v, maxLen, depth + 1));
   }
   if (typeof obj === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(obj)) {
-      out[k] = sanitizeForLog(v, depth + 1);
+      out[k] = sanitizeForLog(v, maxLen, depth + 1);
     }
     return out;
   }
   return obj;
 }
 
+/** Emit api_response. When log_level is not 'verbose', response body is omitted. */
 export function logApiResponse(action, status, success, source = null, responseData = null) {
   const payload = { action, status, success, source };
-  if (responseData != null) {
-    payload.response = sanitizeForLog(responseData);
+  if (responseData != null && shouldLog('verbose')) {
+    const cfg = getLoggingConfig();
+    const maxLen = typeof cfg.maxBodyLogLength === 'number' ? cfg.maxBodyLogLength : DEFAULT_MAX_BODY_LOG_LENGTH;
+    payload.response = sanitizeForLog(responseData, maxLen);
   }
   emit('api_response', payload);
 }
@@ -92,11 +145,21 @@ export function logApiError(action, status, error, source = null) {
   emit('api_error', { action, status, error, source });
 }
 
-export function createLogger(source) {
+/**
+ * Create a logger with level methods. Uses config.logging if provided, else getLoggingConfig().
+ * All messages truncated to maxBodyLogLength. Levels: verbose, debug, info, warning, error, fatal.
+ */
+export function createLogger(source, config = null) {
   const prefix = source ? `[${source}] ` : '';
   return {
-    log: (message, taskId = null) => log(`${prefix}${message}`, taskId),
-    logError: (message, taskId = null) => logError(`${prefix}${message}`, taskId)
+    verbose: (msg, taskId = null) => log(prefix + msg, taskId, 'verbose'),
+    debug: (msg, taskId = null) => log(prefix + msg, taskId, 'debug'),
+    info: (msg, taskId = null) => log(prefix + msg, taskId, 'info'),
+    warning: (msg, taskId = null) => log(prefix + msg, taskId, 'warning'),
+    error: (msg, taskId = null) => logError(prefix + msg, taskId, 'error'),
+    fatal: (msg, taskId = null) => logError(prefix + msg, taskId, 'fatal'),
+    log: (message, taskId = null) => log(prefix + message, taskId, 'info'),
+    logError: (message, taskId = null) => logError(prefix + message, taskId, 'error')
   };
 }
 
@@ -439,6 +502,23 @@ export function validateAndEnrichResponse(registry, action, responseData) {
 // LLM CALL WITH RETRY
 // ═══════════════════════════════════════════════════════════════
 
+/** ~20 s per step (LLM + device actions). Used to pick cache TTL. */
+const ESTIMATED_SECONDS_PER_STEP = 20;
+/** Threshold (seconds) above which we use 1h cache instead of 5m. */
+const CACHE_TTL_THRESHOLD_SECONDS = 5 * 60; // 5 min
+
+/**
+ * Pick Anthropic cache TTL from plan length. Use 1h if estimated task duration > 5 min, else 5m.
+ * @param {{ steps?: unknown[] }} plan - Execution plan with steps
+ * @returns {'5m' | '1h'}
+ */
+export function getCacheTtlForExecution(plan) {
+  const steps = plan?.steps;
+  const n = Array.isArray(steps) && steps.length > 0 ? steps.length : 1;
+  const estimatedSeconds = n * ESTIMATED_SECONDS_PER_STEP;
+  return estimatedSeconds > CACHE_TTL_THRESHOLD_SECONDS ? '1h' : '5m';
+}
+
 /**
  * Call LLM API with automatic retry on rate limit
  * @param {object} options - Call options
@@ -448,11 +528,12 @@ export function validateAndEnrichResponse(registry, action, responseData) {
  * @param {string} options.systemPrompt - System prompt
  * @param {string} options.userPrompt - User prompt
  * @param {number} [options.temperature] - Optional; omit to use API default (some models only support default 1)
+ * @param {'5m'|'1h'} [options.cacheTtl] - Anthropic only: cache TTL for system prompt ('5m' or '1h')
  * @param {number} options.retryCount - Current retry count (default 0)
  * @param {number} options.maxRetries - Max retries (default 3)
  * @returns {Promise<string>} LLM response content
  */
-export async function callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, temperature, retryCount = 0, maxRetries = 3 }) {
+export async function callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, temperature, cacheTtl, retryCount = 0, maxRetries = 3 }) {
   try {
     if (provider === 'openai') {
       const body = {
@@ -477,13 +558,27 @@ export async function callLLMWithRetry({ provider, client, model, systemPrompt, 
       const body = {
         model,
         max_tokens: 1024,
-        system: systemPrompt,
+        system: cacheTtl === '5m' || cacheTtl === '1h'
+          ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: cacheTtl } }]
+          : systemPrompt,
         messages: [{ role: 'user', content: userPrompt }]
       };
       if (temperature !== undefined && temperature !== null && Number.isFinite(Number(temperature))) {
         body.temperature = Number(temperature);
       }
       const response = await client.messages.create(body);
+
+      const u = response.usage;
+      if (u) {
+        const parts = [`Prompt: ${u.input_tokens ?? 0}`, `Completion: ${u.output_tokens ?? 0}`];
+        const cr = u.cache_read_input_tokens ?? 0;
+        const cc = u.cache_creation_input_tokens ?? 0;
+        if (cr > 0 || cc > 0) {
+          parts.push(`Cache read: ${cr}`, `Cache creation: ${cc}`);
+        }
+        log(`📊 Anthropic tokens - ${parts.join(', ')}`);
+      }
+
       return response.content[0].text;
     }
   } catch (error) {
@@ -495,12 +590,71 @@ export async function callLLMWithRetry({ provider, client, model, systemPrompt, 
       log(`⏳ Rate limited. Waiting ${waitTime}ms before retry ${retryCount + 1}/${maxRetries}...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
 
-      return callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, temperature, retryCount: retryCount + 1, maxRetries });
+      return callLLMWithRetry({ provider, client, model, systemPrompt, userPrompt, temperature, cacheTtl, retryCount: retryCount + 1, maxRetries });
     }
 
     log(`❌ LLM Error: ${error.message}`);
     throw error;
   }
+}
+
+/**
+ * Parse JSON from LLM response. Handles extra text before/after (e.g. Anthropic).
+ * Tries: direct parse, strip ```json/``` blocks, extract first {...} via brace-matching.
+ * @param {string} raw - Raw LLM response
+ * @returns {object} Parsed object
+ * @throws {Error} If no valid JSON found
+ */
+export function parseJsonFromLLM(raw) {
+  if (raw == null || typeof raw !== 'string') {
+    throw new Error('parseJsonFromLLM expects a string');
+  }
+  let s = raw.trim();
+
+  function tryParse(str) {
+    const t = String(str).trim();
+    if (!t) return null;
+    try {
+      return JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+
+  let parsed = tryParse(s);
+  if (parsed != null) return parsed;
+
+  const block = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (block) {
+    parsed = tryParse(block[1]);
+    if (parsed != null) return parsed;
+  }
+
+  const start = s.indexOf('{');
+  if (start === -1) throw new Error('No JSON object found in LLM response');
+
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') { inString = false; continue; }
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === '{') { depth++; continue; }
+    if (c === '}') {
+      depth--;
+      if (depth === 0) {
+        const slice = s.slice(start, i + 1);
+        parsed = tryParse(slice);
+        if (parsed != null) return parsed;
+        throw new Error('Extracted {...} is not valid JSON');
+      }
+    }
+  }
+  throw new Error('No complete JSON object found in LLM response');
 }
 
 // ═══════════════════════════════════════════════════════════════

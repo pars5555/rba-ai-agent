@@ -1,17 +1,18 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { emit, estimateTokens, truncateForLog, buildUserPrompt, callLLMWithRetry, createLogger } from './util.js';
+import { emit, estimateTokens, truncateForLog, buildUserPrompt, callLLMWithRetry, createLogger, parseJsonFromLLM, getCacheTtlForExecution } from './util.js';
 
 /**
  * LLM Client v3.1 - Minimal with utils
  */
 class LLMClient {
   constructor(config, agentConfig, getInteractiveMessage) {
-    const { log } = createLogger('llm.js');
-    this.log = log;
+    const logger = createLogger('llm.js', config);
+    this.log = logger.log;
+    this.logVerbose = logger.verbose;
     this.agentConfig = agentConfig;
     this.getInteractiveMessage = getInteractiveMessage;
-    this.maxLogLength = config.logging?.maxBodyLogLength || 2000;
+    this.maxLogLength = config.logging?.maxBodyLogLength ?? 500;
 
     const provider = config.llm.provider;
     this.provider = provider;
@@ -43,7 +44,7 @@ class LLMClient {
       systemPrompt, userPrompt, temperature: this.temperature
     });
 
-    const plan = JSON.parse(content);
+    const plan = parseJsonFromLLM(content);
     this.log(`📥 PLAN: ${plan.steps?.length || 0} steps`);
     plan.steps?.forEach((s, i) => this.log(`   ${i + 1}. ${s.description}`));
     return plan;
@@ -59,7 +60,7 @@ class LLMClient {
     this.log(`🎯 STEP ${currentStepIndex + 1}/${plan.steps.length}: ${plan.steps[currentStepIndex].description}`);
     this.log(`📊 ~${estimateTokens(systemPrompt + userPrompt)} tokens, ${stepActions.length} actions in step`);
     this.log(`📤 USER PROMPT:`);
-    this.log(truncateForLog(userPrompt, this.maxLogLength));
+    this.logVerbose(truncateForLog(userPrompt, this.maxLogLength));
     this.log(`${'─'.repeat(60)}`);
 
     emit('llm_request', {
@@ -68,16 +69,19 @@ class LLMClient {
       source: 'llm.js'
     });
 
+    const cacheTtl = this.provider === 'anthropic' ? getCacheTtlForExecution(plan) : undefined;
+    if (cacheTtl) this.logVerbose(`📦 Anthropic cache: ${cacheTtl} (execution prompt)`);
+
     const content = await callLLMWithRetry({
       provider: this.provider, client: this.client, model: this.model,
-      systemPrompt, userPrompt, temperature: this.temperature
+      systemPrompt, userPrompt, temperature: this.temperature, cacheTtl
     });
 
-    this.log(`📥 AI RAW: ${content}`);
+    this.logVerbose(`📥 AI RAW: ${content}`);
     
     let result;
     try {
-      result = JSON.parse(content);
+      result = parseJsonFromLLM(content);
     } catch (e) {
       this.log(`❌ JSON Parse Error: ${e.message}`);
       throw new Error(`Invalid JSON from AI: ${e.message}`);

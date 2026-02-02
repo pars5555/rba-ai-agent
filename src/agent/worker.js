@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'worker_threads';
-import { emit, getHumanErrorMessage, updateInstalledAppsFromSnapshot, validateRunAppPackage, createLogger } from './util.js';
+import { emit, getHumanErrorMessage, updateInstalledAppsFromSnapshot, validateRunAppPackage, createLogger, setLoggingConfig } from './util.js';
 import RBAClient from './rba.js';
 import LLMClient from './llm.js';
 
@@ -13,10 +13,10 @@ import LLMClient from './llm.js';
  */
 
 const { sn, task, taskId, options, config } = workerData;
-const { log } = createLogger('worker.js');
 
-// Debug: Log received options
-console.log(`[worker] Options received:`, JSON.stringify(options));
+// Per-task logging: log_level (verbose|debug|info|warning|error|fatal), maxBodyLogLength
+setLoggingConfig(config.logging || { log_level: 'info', maxBodyLogLength: 500 });
+const { log } = createLogger('worker.js');
 
 // Interactive message
 let interactiveMessage = null;
@@ -83,7 +83,7 @@ async function runAgent() {
 
   let initialSnapshotResult = null;
   try {
-    initialSnapshotResult = await rba.call(sn, 'get_device_snapshot', { include_ui_nodes: false });
+    initialSnapshotResult = await rba.call(sn, 'get_device_snapshot');
   } catch (e) {
     initialSnapshotResult = { success: false, error: e.message };
   }
@@ -175,7 +175,7 @@ async function runAgent() {
   const installedAppsState = { installedApps: null };
 
   updateInstalledAppsFromSnapshot(initialSnapshotResult.snapshot, installedAppsState);
-  lastApiResult = { action: 'get_device_snapshot', params: { include_ui_nodes: false }, ...initialSnapshotResult };
+  lastApiResult = { action: 'get_device_snapshot', params: { }, ...initialSnapshotResult };
 
   // Track actions for CURRENT step only
   let stepActions = [];

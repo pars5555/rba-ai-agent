@@ -282,6 +282,7 @@ async function runAgent() {
       log(`📸 [${totalActions}] send_screenshot - capturing and sending to user...`);
       try {
         const screenshotResult = await rba.call(sn, 'get_screenshot', { quality: decision.params?.quality || 80 });
+          log(`📸 Screenshot result ` + JSON.stringify(screenshotResult));
         if (screenshotResult.success && screenshotResult.data) {
           emit('screenshot', {
             step: planCurrentStep,
@@ -291,7 +292,6 @@ async function runAgent() {
             width: screenshotResult.width,
             height: screenshotResult.height
           });
-          log(`📸 Screenshot sent to user (${screenshotResult.width}x${screenshotResult.height})`);
         }
         lastApiResult = { action: 'send_screenshot', success: true, sent: !!screenshotResult.data };
         stepActions.push({ action: 'send_screenshot', params: decision.params || {}, success: true });

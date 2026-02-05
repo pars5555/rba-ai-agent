@@ -284,7 +284,7 @@ async function runAgent() {
         const screenshotResult = await rba.call(sn, 'get_screenshot', { quality: decision.params?.quality || 80 });
           log(`📸 Screenshot result ` + JSON.stringify(screenshotResult));
         if (screenshotResult.success && screenshotResult.data) {
-          emit('screenshot', {
+          emit('device_screenshot', {
             step: planCurrentStep,
             actionNum: totalActions,
             reason: decision.reason || 'Screenshot requested',

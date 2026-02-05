@@ -276,6 +276,33 @@ async function runAgent() {
       }
     }
 
+    // Handle send_screenshot - virtual command that sends screenshot to user via websocket
+    if (decision.action === 'send_screenshot') {
+      totalActions++;
+      log(`📸 [${totalActions}] send_screenshot - capturing and sending to user...`);
+      try {
+        const screenshotResult = await rba.call(sn, 'get_screenshot', { quality: decision.params?.quality || 80 });
+        if (screenshotResult.success && screenshotResult.data) {
+          emit('screenshot', {
+            step: planCurrentStep,
+            actionNum: totalActions,
+            reason: decision.reason || 'Screenshot requested',
+            data: screenshotResult.data,
+            width: screenshotResult.width,
+            height: screenshotResult.height
+          });
+          log(`📸 Screenshot sent to user (${screenshotResult.width}x${screenshotResult.height})`);
+        }
+        lastApiResult = { action: 'send_screenshot', success: true, sent: !!screenshotResult.data };
+        stepActions.push({ action: 'send_screenshot', params: decision.params || {}, success: true });
+      } catch (e) {
+        log(`📸 Screenshot failed: ${e.message}`);
+        lastApiResult = { action: 'send_screenshot', success: false, error: e.message };
+        stepActions.push({ action: 'send_screenshot', params: decision.params || {}, success: false });
+      }
+      continue;
+    }
+
     // Execute action
     totalActions++;
     log(`⚡ [${totalActions}] ${decision.action}${decision.params ? ' ' + JSON.stringify(decision.params) : ''}`);
